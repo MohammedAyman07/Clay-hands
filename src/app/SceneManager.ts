@@ -119,6 +119,8 @@ function createDustTexture(): THREE.CanvasTexture {
 export class SceneManager {
   public readonly studioGroup = new THREE.Group();
   public readonly kilnPosition = new THREE.Vector3(1.85, 0, -0.35);
+  public readonly galleryPosition = new THREE.Vector3(-1.65, 0, -0.35);
+  public readonly galleryGroup = new THREE.Group();
   public readonly galleryPedestalAnchor = new THREE.Group();
   public controls: OrbitControls | null = null;
 
@@ -434,8 +436,8 @@ export class SceneManager {
     const galTopGeo = new THREE.CylinderGeometry(0.24, 0.24, 0.025, 28);
     this.geometries.push(galPedGeo, galTopGeo);
 
-    const galGroup = new THREE.Group();
-    galGroup.position.set(-1.65, 0, -0.35);
+    const galGroup = this.galleryGroup;
+    galGroup.position.copy(this.galleryPosition);
     const galPed = new THREE.Mesh(galPedGeo, stoneMat);
     galPed.position.y = 0.4;
     galPed.castShadow = true;

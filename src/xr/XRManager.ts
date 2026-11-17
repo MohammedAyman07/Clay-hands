@@ -82,8 +82,9 @@ export class XRManager {
 
   public sampleXRHands(
     now: number,
-    wheelOriginWorld: THREE.Vector3,
-    wheelGroupInverse: THREE.Matrix4,
+    clayBaseWorld: THREE.Vector3,
+    stationaryWheelInverse: THREE.Matrix4,
+    wheelSurfaceY: number,
     clayHeight: number
   ): { frame: HandTrackingFrame; calibration: CalibrationData } | null {
     const input = xb.core?.input;
@@ -147,11 +148,12 @@ export class XRManager {
       if (pinkySpace?.visible) pinkySpace.getWorldPosition(this._pinkyTip);
       else this._pinkyTip.copy(this._ringTip);
 
-      // Convert palm midpoint relative to clay mount local space
+      // Convert palm midpoint relative to stationary wheel group (offset by bat height)
       this._localPos
         .copy(this._wrist)
         .lerp(this._indexTip, 0.38)
-        .applyMatrix4(wheelGroupInverse);
+        .applyMatrix4(stationaryWheelInverse);
+      this._localPos.y -= wheelSurfaceY;
 
       const handId: 'left' | 'right' =
         rawHandedness === 'left' || rawHandedness === 'right'
@@ -193,7 +195,7 @@ export class XRManager {
 
       const radialDist = Math.hypot(this._localPos.x, this._localPos.z);
       const inZone =
-        radialDist < 0.4 &&
+        radialDist < 0.36 &&
         this._localPos.y > -0.09 &&
         this._localPos.y < clayHeight + 0.18;
 
@@ -211,29 +213,29 @@ export class XRManager {
         palmCenter: { x: normX, y: normY, z: this._localPos.z },
         wrist: { x: normX, y: normY, z: this._localPos.z },
         thumbTip: {
-          x: this._thumbTip.x - wheelOriginWorld.x,
-          y: this._thumbTip.y - wheelOriginWorld.y,
-          z: this._thumbTip.z - wheelOriginWorld.z,
+          x: this._thumbTip.x - clayBaseWorld.x,
+          y: this._thumbTip.y - clayBaseWorld.y,
+          z: this._thumbTip.z - clayBaseWorld.z,
         },
         indexTip: {
-          x: this._indexTip.x - wheelOriginWorld.x,
-          y: this._indexTip.y - wheelOriginWorld.y,
-          z: this._indexTip.z - wheelOriginWorld.z,
+          x: this._indexTip.x - clayBaseWorld.x,
+          y: this._indexTip.y - clayBaseWorld.y,
+          z: this._indexTip.z - clayBaseWorld.z,
         },
         middleTip: {
-          x: this._middleTip.x - wheelOriginWorld.x,
-          y: this._middleTip.y - wheelOriginWorld.y,
-          z: this._middleTip.z - wheelOriginWorld.z,
+          x: this._middleTip.x - clayBaseWorld.x,
+          y: this._middleTip.y - clayBaseWorld.y,
+          z: this._middleTip.z - clayBaseWorld.z,
         },
         ringTip: {
-          x: this._ringTip.x - wheelOriginWorld.x,
-          y: this._ringTip.y - wheelOriginWorld.y,
-          z: this._ringTip.z - wheelOriginWorld.z,
+          x: this._ringTip.x - clayBaseWorld.x,
+          y: this._ringTip.y - clayBaseWorld.y,
+          z: this._ringTip.z - clayBaseWorld.z,
         },
         pinkyTip: {
-          x: this._pinkyTip.x - wheelOriginWorld.x,
-          y: this._pinkyTip.y - wheelOriginWorld.y,
-          z: this._pinkyTip.z - wheelOriginWorld.z,
+          x: this._pinkyTip.x - clayBaseWorld.x,
+          y: this._pinkyTip.y - clayBaseWorld.y,
+          z: this._pinkyTip.z - clayBaseWorld.z,
         },
         pinchDistance: pinchDist,
         handSpan,
@@ -265,12 +267,15 @@ export class XRManager {
   }
 
   /**
-   * Aligns the pottery wheel & spatial VR UI panel comfortably in front of
-   * the seated or standing Meta Quest user.
+   * Aligns the active studio station (wheel, kiln, or gallery pedestal) and the
+   * spatial VR panel comfortably in front of the Meta Quest headset.
    */
-  public alignStationToHeadset(
+  public alignStationForScreen(
+    screen: string,
     camera: THREE.Camera,
     wheelGroup: THREE.Object3D,
+    kilnGroup: THREE.Object3D | null,
+    galleryGroup: THREE.Object3D | null,
     vrPanel: THREE.Object3D | null
   ): void {
     const headPos = new THREE.Vector3();
@@ -282,28 +287,71 @@ export class XRManager {
     else forward.normalize();
 
     const right = new THREE.Vector3(-forward.z, 0, forward.x);
-    const wheelDist = 0.52;
-    const wheelYOffset =
+    const yaw = Math.atan2(forward.x, forward.z) + Math.PI;
+    const yOffset =
       headPos.y > 0.35
         ? THREE.MathUtils.clamp(headPos.y - 1.12, -0.22, 0.32)
         : 0;
 
-    wheelGroup.position.set(
-      headPos.x + forward.x * wheelDist,
-      wheelYOffset,
-      headPos.z + forward.z * wheelDist
-    );
-
-    const yaw = Math.atan2(forward.x, forward.z) + Math.PI;
-    wheelGroup.rotation.y = yaw;
+    if (screen === 'kiln' && kilnGroup) {
+      // Place kiln comfortably in front-right so user watches firing & reveal
+      kilnGroup.position.set(
+        headPos.x + forward.x * 1.15 + right.x * 0.22,
+        yOffset,
+        headPos.z + forward.z * 1.15 + right.z * 0.22
+      );
+      kilnGroup.rotation.y = yaw;
+    } else if (screen === 'gallery' && galleryGroup) {
+      // Place gallery pedestal comfortably in front-right for close hand inspection
+      galleryGroup.position.set(
+        headPos.x + forward.x * 0.72 + right.x * 0.22,
+        yOffset,
+        headPos.z + forward.z * 0.72 + right.z * 0.22
+      );
+      galleryGroup.rotation.y = yaw;
+    } else {
+      const wheelDist =
+        screen === 'welcome' || screen === 'start-studio' || screen === 'settings'
+          ? 0.76
+          : 0.54;
+      const wheelSide =
+        screen === 'welcome' || screen === 'start-studio' || screen === 'settings'
+          ? 0.28
+          : 0;
+      wheelGroup.position.set(
+        headPos.x + forward.x * wheelDist + right.x * wheelSide,
+        yOffset,
+        headPos.z + forward.z * wheelDist + right.z * wheelSide
+      );
+      wheelGroup.rotation.y = yaw;
+    }
 
     if (vrPanel) {
+      const isMenuScreen =
+        screen === 'welcome' ||
+        screen === 'start-studio' ||
+        screen === 'settings';
+      const panelDist = isMenuScreen ? 0.72 : 0.62;
+      const panelSide = isMenuScreen ? -0.18 : -0.44;
+      const panelY =
+        headPos.y > 0.35
+          ? THREE.MathUtils.clamp(headPos.y - 0.08, 0.85, 1.55)
+          : yOffset + 1.06;
+
       vrPanel.position.set(
-        wheelGroup.position.x - right.x * 0.46 + forward.x * 0.08,
-        wheelYOffset + 1.04,
-        wheelGroup.position.z - right.z * 0.46 + forward.z * 0.08
+        headPos.x + forward.x * panelDist + right.x * panelSide,
+        panelY,
+        headPos.z + forward.z * panelDist + right.z * panelSide
       );
       vrPanel.lookAt(headPos.x, vrPanel.position.y, headPos.z);
     }
+  }
+
+  public alignStationToHeadset(
+    camera: THREE.Camera,
+    wheelGroup: THREE.Object3D,
+    vrPanel: THREE.Object3D | null
+  ): void {
+    this.alignStationForScreen('studio', camera, wheelGroup, null, null, vrPanel);
   }
 }

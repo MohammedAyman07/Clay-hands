@@ -39,6 +39,11 @@ export type MouseToolMode =
 export interface UIActions {
   onNavigate: (screen: AppScreen) => void;
   onCloseModal: () => void;
+  onSelectModeSelection: (
+    mode: GameMode,
+    lessonId: GuidedLessonId,
+    challengeId: string
+  ) => void;
   onStartMode: (
     mode: GameMode,
     inputMode: InputMode,
@@ -73,6 +78,7 @@ export interface UIActions {
   onToggleGlazeSpin: () => void;
   onStageJump: (stage: PotteryStage) => void;
   onToggleVR: () => void;
+  onToggleHandCursor: () => void;
   onCelebrateCreateAnother: () => void;
   onTutorialSelectStep: (index: number) => void;
   onTutorialPrev: () => void;
@@ -111,6 +117,7 @@ export interface StudioHUDState {
   vrSupported: boolean;
   inVR: boolean;
   vrMessage: string;
+  handCursorActive: boolean;
   tutorialMatched: boolean;
   tutorialProgress: number;
   tutorialFinishedAll: boolean;
@@ -198,7 +205,7 @@ export class UIManager {
         this.renderKilnScreen(hud);
         break;
       case 'gallery':
-        this.renderGalleryScreen(galleryItems, selectedGalleryId);
+        this.renderGalleryScreen(galleryItems, selectedGalleryId, hud);
         break;
       case 'settings':
         this.renderSettingsScreen(settings, hud);
@@ -482,6 +489,9 @@ export class UIManager {
         <div class="welcome-actions">
           <div class="welcome-primary-row">
             <button class="btn btn-primary btn-welcome-main" id="btn-enter-studio">Enter Studio</button>
+            <button class="btn ${hud.handCursorActive ? 'btn-hand-active' : 'btn-secondary'} btn-welcome-main" id="btn-welcome-hand-cursor">
+              ${hud.handCursorActive ? 'Hand Cursor: ON' : 'Hand Cursor'}
+            </button>
             ${
               hud.vrSupported
                 ? '<button class="btn btn-vr btn-welcome-main" id="btn-welcome-vr">Enter Meta Quest VR</button>'
@@ -495,7 +505,7 @@ export class UIManager {
           </div>
         </div>
         <div class="control-hint-line">
-          <span>Webcam Hands · Brush Paint · Mouse Fallback${hud.vrSupported ? ' · Meta Quest WebXR Ready' : ''}</span>
+          <span>Webcam Hands · Pinch Hand Cursor · Brush Paint · Mouse Fallback${hud.vrSupported ? ' · Meta Quest WebXR Ready' : ''}</span>
         </div>
       </div>
     `;
@@ -503,6 +513,9 @@ export class UIManager {
 
     el.querySelector('#btn-enter-studio')?.addEventListener('click', () =>
       this.actions.onNavigate('start-studio')
+    );
+    el.querySelector('#btn-welcome-hand-cursor')?.addEventListener('click', () =>
+      this.actions.onToggleHandCursor()
     );
     el.querySelector('#btn-open-tutorial')?.addEventListener('click', () =>
       this.actions.onNavigate('tutorial')
@@ -554,13 +567,18 @@ export class UIManager {
     };
 
     el.innerHTML = `
-      <div class="panel-card panel-wide">
-        <div class="panel-header">
+      <div class="panel-card panel-wide panel-start-studio">
+        <div class="panel-header panel-header-compact">
           <div>
             <p class="eyebrow">SELECT VESSEL & INPUT</p>
             <h2>Pottery Studio</h2>
           </div>
-          <button class="btn btn-ghost" id="btn-back-welcome">Back</button>
+          <div class="cta-row">
+            <button class="btn btn-small ${hud.handCursorActive ? 'btn-hand-active' : 'btn-secondary'}" id="btn-hud-hand-cursor">
+              ${hud.handCursorActive ? 'Hand Cursor: ON' : 'Hand Cursor'}
+            </button>
+            <button class="btn btn-small btn-ghost" id="btn-back-welcome">Back</button>
+          </div>
         </div>
 
         <div class="mode-grid">
@@ -572,6 +590,9 @@ export class UIManager {
               <h3>Free Wheel</h3>
               <span class="mode-kicker">Open Throwing</span>
             </div>
+            <button class="btn btn-primary btn-small mode-open-btn" id="btn-open-free" data-open-mode="free">
+              Open Free Wheel
+            </button>
           </div>
 
           <div class="mode-card mode-card-visual" data-mode="guided">
@@ -592,6 +613,9 @@ export class UIManager {
                 `
               ).join('')}
             </div>
+            <button class="btn btn-primary btn-small mode-open-btn" id="btn-open-guided" data-open-mode="guided">
+              Open ${shortLessonNames[hud.lessonId]}
+            </button>
           </div>
 
           <div class="mode-card mode-card-visual" data-mode="challenge">
@@ -612,6 +636,9 @@ export class UIManager {
                 `
               ).join('')}
             </div>
+            <button class="btn btn-primary btn-small mode-open-btn" id="btn-open-challenge" data-open-mode="challenge">
+              Open ${shortChallengeNames[hud.challengeId] ?? 'Challenge'}
+            </button>
           </div>
         </div>
 
@@ -637,6 +664,7 @@ export class UIManager {
         const m = (card as HTMLElement).dataset.mode;
         card.classList.toggle('mode-card-active', m === chosenMode);
       });
+      this.actions.onSelectModeSelection(chosenMode, chosenLesson, chosenChallenge);
     };
     syncCards();
 
@@ -664,6 +692,10 @@ export class UIManager {
             'mode-thumb-img'
           );
         }
+        const openBtn = el.querySelector('#btn-open-guided');
+        if (openBtn) {
+          openBtn.textContent = `Open ${shortLessonNames[chosenLesson]}`;
+        }
         syncCards();
       });
     });
@@ -685,7 +717,28 @@ export class UIManager {
             'mode-thumb-img'
           );
         }
+        const openBtn = el.querySelector('#btn-open-challenge');
+        if (openBtn) {
+          openBtn.textContent = `Open ${shortChallengeNames[chosenChallenge] ?? 'Challenge'}`;
+        }
         syncCards();
+      });
+    });
+
+    el.querySelectorAll('[data-open-mode]').forEach((btn) => {
+      btn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const openMode =
+          ((btn as HTMLElement).dataset.openMode as GameMode) ?? chosenMode;
+        chosenMode = openMode;
+        const preferredInput: InputMode =
+          hud.handCursorActive || hud.inputMode === 'webcam' ? 'webcam' : 'mouse';
+        void this.actions.onStartMode(
+          openMode,
+          preferredInput,
+          chosenLesson,
+          chosenChallenge
+        );
       });
     });
 
@@ -696,6 +749,9 @@ export class UIManager {
       void this.actions.onStartMode(chosenMode, 'mouse', chosenLesson, chosenChallenge);
       this.actions.onToggleVR();
     });
+    el.querySelector('#btn-hud-hand-cursor')?.addEventListener('click', () =>
+      this.actions.onToggleHandCursor()
+    );
     el.querySelector('#btn-start-webcam')?.addEventListener('click', () =>
       this.actions.onStartMode(chosenMode, 'webcam', chosenLesson, chosenChallenge)
     );
@@ -845,6 +901,11 @@ export class UIManager {
             ${
               hud.vrSupported
                 ? `<button class="btn btn-small btn-secondary" id="hud-vr-btn">${hud.inVR ? 'Exit VR' : 'Enter VR'}</button>`
+                : ''
+            }
+            ${
+              hud.handCursorActive || hud.inputMode === 'webcam'
+                ? `<button class="btn btn-small ${hud.handCursorActive ? 'btn-hand-active' : 'btn-secondary'}" id="btn-hud-hand-cursor">${hud.handCursorActive ? 'Hand Cursor: ON' : 'Hand Cursor'}</button>`
                 : ''
             }
             <button class="btn btn-small btn-secondary" id="hud-tutorial-btn">Gestures</button>
@@ -1015,6 +1076,9 @@ export class UIManager {
     );
     el.querySelector('#hud-vr-btn')?.addEventListener('click', () =>
       this.actions.onToggleVR()
+    );
+    el.querySelector('#btn-hud-hand-cursor')?.addEventListener('click', () =>
+      this.actions.onToggleHandCursor()
     );
     el.querySelector('#hud-tutorial-btn')?.addEventListener('click', () =>
       this.actions.onNavigate('tutorial')
@@ -1263,6 +1327,9 @@ export class UIManager {
                 ? `<button class="btn btn-small btn-vr" id="hud-vr-btn">${hud.inVR ? 'Exit VR' : 'Enter VR'}</button>`
                 : ''
             }
+            <button class="btn btn-small ${hud.handCursorActive ? 'btn-hand-active' : 'btn-secondary'}" id="btn-hud-hand-cursor">
+              ${hud.handCursorActive ? 'Hand Cursor: ON' : 'Hand Cursor'}
+            </button>
             <button class="btn btn-small btn-ghost" id="btn-tut-close">Back</button>
           </div>
         </div>
@@ -1295,6 +1362,9 @@ export class UIManager {
     );
     el.querySelector('#hud-vr-btn')?.addEventListener('click', () =>
       this.actions.onToggleVR()
+    );
+    el.querySelector('#btn-hud-hand-cursor')?.addEventListener('click', () =>
+      this.actions.onToggleHandCursor()
     );
     el.querySelector('#btn-tut-close')?.addEventListener('click', () =>
       this.actions.onCloseModal()
@@ -1366,6 +1436,14 @@ export class UIManager {
                 ? `<button class="btn btn-small btn-secondary" id="hud-recal-btn">Recalibrate</button>`
                 : ''
             }
+            ${
+              hud.vrSupported
+                ? `<button class="btn btn-small btn-vr" id="hud-vr-btn">${hud.inVR ? 'Exit VR' : 'Enter VR'}</button>`
+                : ''
+            }
+            <button class="btn btn-small ${hud.handCursorActive ? 'btn-hand-active' : 'btn-secondary'}" id="btn-hud-hand-cursor">
+              ${hud.handCursorActive ? 'Hand Cursor: ON' : 'Hand Cursor'}
+            </button>
             <button class="btn btn-small btn-secondary" id="btn-glaze-back">Back to Wheel</button>
           </div>
         </div>
@@ -1442,6 +1520,12 @@ export class UIManager {
     el.querySelector('#btn-glaze-back')?.addEventListener('click', () =>
       this.actions.onNavigate('studio')
     );
+    el.querySelector('#hud-vr-btn')?.addEventListener('click', () =>
+      this.actions.onToggleVR()
+    );
+    el.querySelector('#btn-hud-hand-cursor')?.addEventListener('click', () =>
+      this.actions.onToggleHandCursor()
+    );
     el.querySelector('#btn-fire-kiln')?.addEventListener('click', () =>
       this.actions.onStartKiln()
     );
@@ -1464,6 +1548,20 @@ export class UIManager {
           </div>
           <div class="progress-track">
             <div class="progress-fill kiln-fill" id="kiln-bar-fill" style="width: ${Math.round(hud.kilnStatus.progress * 100)}%"></div>
+          </div>
+        </div>
+        <div class="hud-top-right">
+          <div class="hud-quick-actions">
+            ${
+              hud.vrSupported
+                ? `<button class="btn btn-small btn-vr" id="hud-vr-btn">${hud.inVR ? 'Exit VR' : 'Enter VR'}</button>`
+                : ''
+            }
+            ${
+              hud.handCursorActive
+                ? `<button class="btn btn-small btn-hand-active" id="btn-hud-hand-cursor">Hand Cursor: ON</button>`
+                : ''
+            }
           </div>
         </div>
       </div>
@@ -1512,6 +1610,12 @@ export class UIManager {
     el.querySelector('#btn-view-gal')?.addEventListener('click', () =>
       this.actions.onNavigate('gallery')
     );
+    el.querySelector('#hud-vr-btn')?.addEventListener('click', () =>
+      this.actions.onToggleVR()
+    );
+    el.querySelector('#btn-hud-hand-cursor')?.addEventListener('click', () =>
+      this.actions.onToggleHandCursor()
+    );
     el.querySelector('#btn-new-pot')?.addEventListener('click', () => {
       this.customPotName = '';
       this.actions.onCelebrateCreateAnother();
@@ -1520,7 +1624,8 @@ export class UIManager {
 
   private renderGalleryScreen(
     items: SavedPotteryItem[],
-    selectedId: string | null
+    selectedId: string | null,
+    hud: StudioHUDState
   ): void {
     const selected = items.find((i) => i.id === selectedId) ?? items[0] ?? null;
     const el = document.createElement('div');
@@ -1539,8 +1644,18 @@ export class UIManager {
           </p>
         </div>
         <div class="hud-top-right">
-          <button class="btn btn-small btn-primary" id="btn-gal-new">Create Pottery</button>
-          <button class="btn btn-small btn-ghost" id="btn-gal-home">Home</button>
+          <div class="hud-quick-actions">
+            ${
+              hud.vrSupported
+                ? `<button class="btn btn-small btn-vr" id="hud-vr-btn">${hud.inVR ? 'Exit VR' : 'Enter VR'}</button>`
+                : ''
+            }
+            <button class="btn btn-small ${hud.handCursorActive ? 'btn-hand-active' : 'btn-secondary'}" id="btn-hud-hand-cursor">
+              ${hud.handCursorActive ? 'Hand Cursor: ON' : 'Hand Cursor'}
+            </button>
+            <button class="btn btn-small btn-primary" id="btn-gal-new">Create Pottery</button>
+            <button class="btn btn-small btn-ghost" id="btn-gal-home">Home</button>
+          </div>
         </div>
       </div>
 
@@ -1615,6 +1730,12 @@ export class UIManager {
     el.querySelector('#btn-gal-home')?.addEventListener('click', () =>
       this.actions.onNavigate('welcome')
     );
+    el.querySelector('#hud-vr-btn')?.addEventListener('click', () =>
+      this.actions.onToggleVR()
+    );
+    el.querySelector('#btn-hud-hand-cursor')?.addEventListener('click', () =>
+      this.actions.onToggleHandCursor()
+    );
   }
 
   private renderSettingsScreen(
@@ -1630,7 +1751,17 @@ export class UIManager {
             <p class="eyebrow">PREFERENCES & ACCESSIBILITY</p>
             <h2>Studio Settings</h2>
           </div>
-          <button class="btn btn-primary" id="btn-set-close">Done</button>
+          <div class="cta-row">
+            ${
+              hud.vrSupported
+                ? `<button class="btn btn-small btn-vr" id="hud-vr-btn">${hud.inVR ? 'Exit VR' : 'Enter VR'}</button>`
+                : ''
+            }
+            <button class="btn btn-small ${hud.handCursorActive ? 'btn-hand-active' : 'btn-secondary'}" id="btn-hud-hand-cursor">
+              ${hud.handCursorActive ? 'Hand Cursor: ON' : 'Hand Cursor'}
+            </button>
+            <button class="btn btn-primary" id="btn-set-close">Done</button>
+          </div>
         </div>
 
         <div class="settings-grid">
@@ -1777,6 +1908,12 @@ export class UIManager {
     );
     el.querySelector('#btn-set-tut')?.addEventListener('click', () =>
       this.actions.onNavigate('tutorial')
+    );
+    el.querySelector('#hud-vr-btn')?.addEventListener('click', () =>
+      this.actions.onToggleVR()
+    );
+    el.querySelector('#btn-hud-hand-cursor')?.addEventListener('click', () =>
+      this.actions.onToggleHandCursor()
     );
     el.querySelector('#btn-set-close')?.addEventListener('click', () =>
       this.actions.onCloseModal()

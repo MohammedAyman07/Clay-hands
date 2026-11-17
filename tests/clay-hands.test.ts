@@ -498,3 +498,41 @@ test('TutorialManager tracks interactive hand & brush practice across all 5 step
   assert.equal(hit5.finishedAll, true);
 });
 
+test('selectCursorHand, computeCursorPinchRatio, and isPointNearAnyRect support smart UI cursor', async () => {
+  const { selectCursorHand, computeCursorPinchRatio, isPointNearAnyRect } =
+    await import('../src/ui/HandCursorController.ts');
+  const left = makeHand('left');
+  const right = makeHand('right');
+
+  assert.equal(selectCursorHand([], 'right'), null);
+  assert.equal(selectCursorHand([left, right], 'right')?.handedness, 'right');
+  assert.equal(selectCursorHand([left, right], 'left')?.handedness, 'left');
+  assert.equal(selectCursorHand([left], 'right')?.handedness, 'left');
+
+  // Visually pinched in 2D even when 3D pinchDistance is inflated by noisy Z depth
+  const cameraPinch = makeHand('right', {
+    thumbTip: { x: 0.5, y: 0.5, z: 0 },
+    indexTip: { x: 0.51, y: 0.51, z: 0.08 },
+    pinchDistance: 0.082,
+    handSpan: 0.15,
+  });
+  assert.ok(computeCursorPinchRatio(cameraPinch) < 0.44);
+
+  // Open hand remains clearly above exit threshold
+  const openHand = makeHand('right', {
+    thumbTip: { x: 0.48, y: 0.45, z: 0 },
+    indexTip: { x: 0.62, y: 0.35, z: 0 },
+    pinchDistance: 0.16,
+    handSpan: 0.15,
+  });
+  assert.ok(computeCursorPinchRatio(openHand) > 0.56);
+
+  // HUD proximity check hides cursor in center clay workspace and wakes near HUD buttons
+  const hudRects = [
+    { left: 20, top: 20, right: 320, bottom: 140 },
+    { left: 300, top: 680, right: 980, bottom: 760 },
+  ];
+  assert.equal(isPointNearAnyRect(640, 380, hudRects, 62), false); // center clay pot
+  assert.equal(isPointNearAnyRect(350, 640, hudRects, 62), true); // approaching bottom dock button
+  assert.equal(isPointNearAnyRect(150, 80, hudRects, 62), true); // directly on HUD card
+});

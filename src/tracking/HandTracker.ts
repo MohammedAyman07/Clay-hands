@@ -42,7 +42,12 @@ export class HandTracker {
   private video: HTMLVideoElement | null = null;
   private stream: MediaStream | null = null;
   private running = false;
-  private initializing = false;
+  private startPromise: Promise<{
+    ok: boolean;
+    errorType: TrackingErrorType;
+    message: string;
+  }> | null = null;
+  private sessionEpoch = 0;
   private lastInferenceTime = 0;
   private lastVideoTime = -1;
   private inferenceIntervalMs = 1000 / 24;
@@ -88,15 +93,34 @@ export class HandTracker {
     this.smoothingAlpha = Math.max(0.22, Math.min(0.68, 0.36 * sensitivity));
   }
 
-  public async startWebcamAndModel(): Promise<{
+  public startWebcamAndModel(): Promise<{
     ok: boolean;
     errorType: TrackingErrorType;
     message: string;
   }> {
-    if (this.initializing) {
-      return { ok: false, errorType: 'none', message: 'Initializing…' };
+    if (this.isReady) {
+      return Promise.resolve({
+        ok: true,
+        errorType: 'none',
+        message: 'Hand tracking active.',
+      });
     }
-    this.initializing = true;
+    if (this.startPromise) {
+      return this.startPromise;
+    }
+
+    const epoch = ++this.sessionEpoch;
+    this.startPromise = this.runStartWebcamAndModel(epoch).finally(() => {
+      this.startPromise = null;
+    });
+    return this.startPromise;
+  }
+
+  private async runStartWebcamAndModel(epoch: number): Promise<{
+    ok: boolean;
+    errorType: TrackingErrorType;
+    message: string;
+  }> {
     this.errorType = 'none';
     this.errorMessage = '';
 
@@ -108,7 +132,7 @@ export class HandTracker {
       }
 
       this.status = 'requesting';
-      this.stream = await navigator.mediaDevices.getUserMedia({
+      const stream = await navigator.mediaDevices.getUserMedia({
         video: {
           width: { ideal: 640 },
           height: { ideal: 480 },
@@ -117,6 +141,17 @@ export class HandTracker {
         },
         audio: false,
       });
+
+      if (epoch !== this.sessionEpoch) {
+        stream.getTracks().forEach((t) => t.stop());
+        return {
+          ok: false,
+          errorType: 'none',
+          message: 'Hand tracking stopped.',
+        };
+      }
+
+      this.stream = stream;
 
       if (!this.video) {
         this.video = document.createElement('video');
@@ -129,6 +164,15 @@ export class HandTracker {
       this.status = 'loading-model';
       if (!this.landmarker) {
         this.landmarker = await this.createLandmarker();
+      }
+
+      if (epoch !== this.sessionEpoch) {
+        this.stopStream();
+        return {
+          ok: false,
+          errorType: 'none',
+          message: 'Hand tracking stopped.',
+        };
       }
 
       this.running = true;
@@ -163,8 +207,6 @@ export class HandTracker {
         errorType: this.errorType,
         message: this.errorMessage,
       };
-    } finally {
-      this.initializing = false;
     }
   }
 
@@ -373,7 +415,9 @@ export class HandTracker {
   }
 
   public stop(): void {
+    this.sessionEpoch++;
     this.running = false;
+    this.status = 'idle';
     this.stopStream();
     this.filters.clear();
     this.latestFrame = { timestamp: 0, hands: [], source: 'webcam' };

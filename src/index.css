@@ -292,6 +292,32 @@ h2 {
   display: block;
 }
 
+.panel-start-studio {
+  padding: 20px 24px;
+}
+
+.panel-header-compact {
+  margin-bottom: 12px;
+  padding-bottom: 10px;
+}
+
+.mode-open-btn {
+  width: 100%;
+  margin-top: auto;
+  padding: 9px 12px;
+  font-size: 0.84rem;
+}
+
+.panel-start-studio .mode-thumb-frame {
+  aspect-ratio: 16 / 10;
+  max-height: 118px;
+}
+
+.panel-start-studio .mode-grid {
+  gap: 12px;
+  margin-bottom: 14px;
+}
+
 .mode-card-head {
   display: flex;
   align-items: baseline;
@@ -1305,3 +1331,66 @@ input[type='checkbox'] {
     gap: 8px;
   }
 }
+
+/* Optional 2D Webcam Hand Cursor Overlay */
+.hand-cursor-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 0;
+  height: 0;
+  pointer-events: none;
+  z-index: 9999;
+}
+
+.hand-cursor-ring {
+  position: absolute;
+  width: 34px;
+  height: 34px;
+  transform: translate(-50%, -50%);
+  border-radius: 50%;
+  border: 2.5px solid var(--terracotta);
+  background: rgba(184, 79, 51, 0.14);
+  box-shadow: 0 2px 10px rgba(42, 24, 12, 0.25);
+  transition: transform 0.08s ease, background 0.08s ease, border-color 0.08s ease;
+}
+
+.hand-cursor-dot {
+  position: absolute;
+  width: 8px;
+  height: 8px;
+  transform: translate(-50%, -50%);
+  border-radius: 50%;
+  background: var(--terracotta);
+}
+
+.hand-cursor-overlay.hand-cursor-pinching .hand-cursor-ring {
+  transform: translate(-50%, -50%) scale(0.72);
+  border-color: var(--sage);
+  background: rgba(77, 109, 67, 0.28);
+}
+
+.hand-cursor-overlay.hand-cursor-dwelling .hand-cursor-ring {
+  transform: translate(-50%, -50%) scale(calc(1.12 - var(--dwell, 0) * 0.32));
+  border-color: var(--ochre);
+  background: conic-gradient(
+    rgba(198, 134, 46, 0.42) calc(var(--dwell, 0) * 360deg),
+    rgba(184, 79, 51, 0.1) 0deg
+  );
+}
+
+.hand-cursor-overlay.hand-cursor-pinching .hand-cursor-dot {
+  background: var(--sage);
+}
+
+.hand-cursor-hover {
+  outline: 2.5px solid var(--terracotta) !important;
+  outline-offset: 2px;
+}
+
+.btn-hand-active {
+  background: var(--sage);
+  border-color: #36502e;
+  color: #fff8ee;
+}
+
