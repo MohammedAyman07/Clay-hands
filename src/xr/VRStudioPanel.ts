@@ -300,11 +300,11 @@ export class VRStudioPanel extends THREE.Group {
       style: { width: '100%', flexDirection: 'column', gap: 10 },
       children: [
         new xb.UIText({
-          text: 'Welcome to the Courtyard Workshop',
+          text: 'Hands-First WebXR Pottery Studio',
           style: { fontSize: 20, fontWeight: 'bold' },
         }),
         new xb.UIText({
-          text: 'Pinch any button with your hand ray or touch directly. Sculpt living clay on the wheel beside you with both hands.',
+          text: '100% controller-free spatial craft. Pinch any button with your hand ray or touch directly, sculpt living clay with both hands, fire glazed vessels, and export 3D .glb models.',
           style: { fontSize: 14, lineHeight: 1.35, opacity: 0.85 },
         }),
         new xb.UIPanel({

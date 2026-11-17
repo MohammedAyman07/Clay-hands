@@ -479,13 +479,18 @@ export class UIManager {
             </svg>
           </div>
           <div>
-            <p class="eyebrow">VILLAGE POTTERY WORKSHOP</p>
+            <p class="eyebrow">META VR HACKATHON 2026 · HANDS-FIRST WEBXR</p>
             <h1>CLAY HANDS</h1>
           </div>
         </div>
         <p class="hero-copy">
-          Sit at the timber wheel in the sunlit courtyard. Shape living clay with your hands, paint folk motifs with a brush, and fire your vessel in the village kiln.
+          Controller-free 3D pottery crafted for natural hand tracking. Sculpt living radial clay on a spinning wheel, brush mineral pigments, fire glazed ceramics in an animated kiln, and export real 3D .glb vessels.
         </p>
+        <ul class="welcome-pillars" aria-label="Core capabilities">
+          <li><strong>Hands-First Spatial Craft:</strong> Built for Meta Quest WebXR hand tracking &amp; local MediaPipe webcam hands — zero controllers required.</li>
+          <li><strong>60 FPS Procedural 3D:</strong> In-place radial mesh deformation, physically-based glazes, and real-time Web Audio feedback.</li>
+          <li><strong>Complete Creative Loop:</strong> Guided lessons, 3D silhouette challenges, kiln firing, and persistent .glb gallery export.</li>
+        </ul>
         <div class="welcome-actions">
           <div class="welcome-primary-row">
             <button class="btn btn-primary btn-welcome-main" id="btn-enter-studio">Enter Studio</button>
@@ -505,7 +510,7 @@ export class UIManager {
           </div>
         </div>
         <div class="control-hint-line">
-          <span>Webcam Hands · Pinch Hand Cursor · Brush Paint · Mouse Fallback${hud.vrSupported ? ' · Meta Quest WebXR Ready' : ''}</span>
+          <span>Quest Hand Tracking · Local MediaPipe Hands · Pinch UI Cursor · Mouse Fallback${hud.vrSupported ? ' · WebXR Ready' : ''}</span>
         </div>
       </div>
     `;
