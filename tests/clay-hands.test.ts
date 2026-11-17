@@ -527,12 +527,13 @@ test('selectCursorHand, computeCursorPinchRatio, and isPointNearAnyRect support 
   });
   assert.ok(computeCursorPinchRatio(openHand) > 0.56);
 
-  // HUD proximity check hides cursor in center clay workspace and wakes near HUD buttons
+  // HUD proximity check hides cursor anywhere over clay/margin and wakes only right on interactive buttons
   const hudRects = [
-    { left: 20, top: 20, right: 320, bottom: 140 },
-    { left: 300, top: 680, right: 980, bottom: 760 },
+    { left: 960, top: 16, right: 1260, bottom: 52 },
+    { left: 320, top: 690, right: 960, bottom: 752 },
   ];
-  assert.equal(isPointNearAnyRect(640, 380, hudRects, 62), false); // center clay pot
-  assert.equal(isPointNearAnyRect(350, 640, hudRects, 62), true); // approaching bottom dock button
-  assert.equal(isPointNearAnyRect(150, 80, hudRects, 62), true); // directly on HUD card
+  assert.equal(isPointNearAnyRect(640, 380, hudRects, 6), false); // center clay pot
+  assert.equal(isPointNearAnyRect(640, 640, hudRects, 6), false); // lower clay / above dock stays cursor-free
+  assert.equal(isPointNearAnyRect(420, 686, hudRects, 6), true); // right on bottom dock edge
+  assert.equal(isPointNearAnyRect(1100, 34, hudRects, 6), true); // directly on top-right quick button
 });

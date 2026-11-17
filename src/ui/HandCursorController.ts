@@ -14,11 +14,12 @@ const CLICKABLE_SELECTOR = [
 ].join(',');
 
 const HUD_CONTAINER_SELECTOR = [
-  '.hud-corner-card',
   '.hud-quick-actions',
-  '.bottom-dock-wrap',
+  '.bottom-dock',
+  '.dock-toggle-btn',
   '.brush-side-rail',
-  '.tutorial-live-card',
+  '.tut-step-dots',
+  '.tut-card-foot',
   '.celebration-banner',
   '.confirm-dialog',
 ].join(',');
@@ -115,7 +116,7 @@ export class HandCursorController {
   private readonly dwellWarmupMs = 240;
   private readonly dwellTriggerMs = 1150;
   private readonly clickCooldownMs = 420;
-  private readonly hudProximityMarginPx = 62;
+  private readonly hudProximityMarginPx = 6;
   private smoothX = 0.5;
   private smoothY = 0.5;
   private hasPosition = false;
@@ -173,9 +174,15 @@ export class HandCursorController {
     preferredHandedness: 'left' | 'right',
     sensitivity = 1.0,
     inXRSession = false,
-    playSculptMode = false
+    playSculptMode = false,
+    suppressForSculpt = false
   ): { overUI: boolean } {
-    if (!this.enabled || inXRSession || frame.source === 'webxr') {
+    if (
+      !this.enabled ||
+      inXRSession ||
+      frame.source === 'webxr' ||
+      (suppressForSculpt && !this.activeSlider)
+    ) {
       this.hide();
       return { overUI: false };
     }

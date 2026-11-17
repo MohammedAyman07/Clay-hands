@@ -1543,13 +1543,24 @@ export class ClayHandsApp extends xb.Script {
       !this.showResetConfirm &&
       !this.showCelebration;
 
-    // 2D hand cursor stays active on all screens, and during play wakes up automatically near HUD buttons
+    const activeSculptHands =
+      this.state.inputMode === 'webcam' &&
+      (this.state.screen === 'studio' || this.state.screen === 'tutorial') &&
+      this.mouseTool !== 'brush' &&
+      !this.showResetConfirm &&
+      !this.showCelebration
+        ? this.latestFrame.hands.filter((h) => h.inInteractionZone).length
+        : 0;
+    const suppressCursorForSculpt = activeSculptHands >= 2;
+
+    // 2D hand cursor stays active on all menus, hidden over clay while sculpting, and wakes on HUD buttons
     const cursorStatus = this.handCursor.update(
       this.latestFrame,
       this.state.settings.handedness,
       this.state.settings.handSensitivity,
       this.xrManager.inXRSession,
-      playSculptMode
+      playSculptMode,
+      suppressCursorForSculpt
     );
 
     const pointingAtVRUI =
