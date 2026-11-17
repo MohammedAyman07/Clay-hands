@@ -17,7 +17,7 @@ export function createDefaultSettings(): StudioSettings {
     performanceMode: false,
     reducedMotion: false,
     soundEnabled: true,
-    musicVolume: 0.35,
+    musicVolume: 0.48,
     sfxVolume: 0.72,
     showWebcamPip: true,
   };

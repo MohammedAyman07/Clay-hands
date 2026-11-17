@@ -983,6 +983,18 @@ export class ClayHandsApp extends xb.Script {
     this.state.navigate(screen);
     this.stopHandBrushSession();
 
+    const musicMood =
+      screen === 'glaze'
+        ? 'glaze'
+        : screen === 'kiln'
+          ? 'kiln'
+          : screen === 'gallery'
+            ? 'gallery'
+            : screen === 'studio' || screen === 'tutorial'
+              ? 'studio'
+              : 'welcome';
+    this.audio.setMusicMood(musicMood);
+
     if (prevScreen === 'tutorial' && screen === 'studio') {
       this.mouseTool = 'auto';
       this.sculpting.reset();
@@ -1448,6 +1460,7 @@ export class ClayHandsApp extends xb.Script {
   }
 
   public onXRSessionStarted(): void {
+    this.audio.unlock();
     this.xrManager.inXRSession = true;
     this.vrPanel.visible = true;
     this.handCursor.hide();
