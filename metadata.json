@@ -1,0 +1,6 @@
+{
+  "name": "CLAY HANDS",
+  "description": "An immersive hand-tracked 3D pottery studio with real webcam hand tracking, procedural clay sculpting, realistic glazes, a magical kiln, and a local pottery gallery.",
+  "requestFramePermissions": ["camera"],
+  "majorCapabilities": []
+}
