@@ -499,6 +499,19 @@ export class SceneManager {
     }
   }
 
+  public setGalleryFraming(vesselCount: number, smashMode: boolean): void {
+    this.currentPreset = 'gallery';
+    this.transitioningCamera = true;
+    if (smashMode && vesselCount > 1) {
+      const pull = vesselCount <= 3 ? 0.34 : vesselCount <= 5 ? 0.62 : 0.85;
+      this._targetPos.set(-1.32 + pull * 0.14, 1.32 + pull * 0.16, 0.96 + pull);
+      this._targetLook.set(-1.65, 0.94, -0.26);
+    } else {
+      this._targetPos.copy(PRESET_TARGETS.gallery.pos);
+      this._targetLook.copy(PRESET_TARGETS.gallery.target);
+    }
+  }
+
   public setOrbitEnabled(enabled: boolean): void {
     if (this.controls) {
       this.controls.enabled = enabled;

@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import * as xb from 'xrblocks';
+import type { SmashScope } from '../gallery/PotterySmashSystem.ts';
 import { GLAZE_CATALOG } from '../kiln/GlazeManager.ts';
 import { CHALLENGE_PRESETS, GUIDED_LESSONS } from '../pottery/PotteryPresets.ts';
 import { VILLAGE_PIGMENTS } from '../pottery/VesselPainter.ts';
@@ -40,6 +41,9 @@ export interface VRStudioPanelActions {
   onSaveToGallery: (customName?: string) => void;
   onSelectGalleryItem: (id: string) => void;
   onDeleteGalleryItem: (id: string) => void;
+  onToggleGallerySmash: () => void;
+  onSmashAllGallery: () => void;
+  onRestoreGallery: () => void;
   onExportGLB: (id?: string) => void;
   onRotateGalleryVessel: (deltaRad: number) => void;
   onToggleGallerySpin: () => void;
@@ -88,6 +92,14 @@ export interface VRPanelSyncState {
   galleryItems: SavedPotteryItem[];
   selectedGalleryId: string | null;
   gallerySpinEnabled: boolean;
+  gallerySmashMode: boolean;
+  gallerySmashScope: SmashScope;
+  galleryTotalVessels: number;
+  galleryCrackedCount: number;
+  gallerySmashedCount: number;
+  galleryIsRestoring: boolean;
+  galleryFocusedName: string | null;
+  galleryFocusedHits: number;
   tutorialStepIndex: number;
   tutorialTitle: string;
   tutorialCue: string;
@@ -204,6 +216,9 @@ export class VRStudioPanel extends THREE.Group {
   private readonly galleryRotLeftBtn: xb.UIButton;
   private readonly galleryRotRightBtn: xb.UIButton;
   private readonly galleryExportBtn: xb.UIButton;
+  private readonly gallerySmashBtn: xb.UIButton;
+  private readonly gallerySmashAllBtn: xb.UIButton;
+  private readonly galleryRestoreBtn: xb.UIButton;
   private readonly galleryDeleteBtn: xb.UIButton;
 
   // Settings Controls
@@ -1105,6 +1120,31 @@ export class VRStudioPanel extends THREE.Group {
         actions.onExportGLB(currentId ?? undefined);
       },
     });
+    this.gallerySmashBtn = new xb.UIButton({
+      label: 'Smash (Bat)',
+      icon: 'sports_baseball',
+      style: { flexGrow: 1, fontSize: 13, padding: 7 },
+      onClick: () => actions.onToggleGallerySmash(),
+    });
+    this.gallerySmashAllBtn = new xb.UIButton({
+      label: 'Smash All',
+      icon: 'gavel',
+      style: { flexGrow: 1, fontSize: 13, padding: 7 },
+      onClick: () => actions.onSmashAllGallery(),
+    });
+    this.galleryRestoreBtn = new xb.UIButton({
+      label: 'Restore (Time)',
+      icon: 'history',
+      visible: false,
+      style: {
+        display: 'none',
+        flexGrow: 1,
+        fontSize: 13,
+        padding: 7,
+        backgroundColor: '#168754',
+      },
+      onClick: () => actions.onRestoreGallery(),
+    });
     this.galleryDeleteBtn = new xb.UIButton({
       label: 'Delete',
       icon: 'delete',
@@ -1147,6 +1187,14 @@ export class VRStudioPanel extends THREE.Group {
             this.galleryRotLeftBtn,
             this.galleryRotRightBtn,
             this.galleryExportBtn,
+          ],
+        }),
+        new xb.UIPanel({
+          style: { width: '100%', flexDirection: 'row', gap: 5 },
+          children: [
+            this.gallerySmashBtn,
+            this.gallerySmashAllBtn,
+            this.galleryRestoreBtn,
             this.galleryDeleteBtn,
           ],
         }),
@@ -1654,17 +1702,69 @@ export class VRStudioPanel extends THREE.Group {
       this.galleryNextPageBtn.disabled = this.galleryPage >= totalPages - 1;
 
       const hasSelected = Boolean(selected);
+      const smashMode = state.gallerySmashMode;
+      const smashScope = state.gallerySmashScope;
+      const crackedCount = state.galleryCrackedCount;
+      const smashedCount = state.gallerySmashedCount;
+      const totalVessels = Math.max(1, state.galleryTotalVessels || items.length);
+      const isRestoring = state.galleryIsRestoring;
+      const intactInView = Math.max(0, totalVessels - smashedCount);
+      const hasDamage = smashedCount > 0 || crackedCount > 0;
+
+      if (isRestoring) {
+        this.galleryItemMeta.text =
+          'Time Stone active — reversing cracks & shards back into pottery!';
+      } else if (smashMode) {
+        const focusLine = state.galleryFocusedName
+          ? `Focus: ${state.galleryFocusedName} (${state.galleryFocusedHits}/2 hits)`
+          : smashScope === 'single'
+            ? `Selected: ${selected?.name ?? 'Pottery'}`
+            : 'Aim Quest hand or controller at a pot';
+        this.galleryItemMeta.text =
+          smashedCount > 0
+            ? `${focusLine} · ${crackedCount} cracked, ${smashedCount}/${totalVessels} broken · Restore or Exit (deletes broken)`
+            : hasDamage
+              ? `${focusLine} · ${crackedCount} cracked · Press Restore or hit again to break!`
+              : smashScope === 'single'
+                ? `${focusLine} · Selected pot only · Hit 1 cracks, Hit 2 shatters!`
+                : `${focusLine} · All ${totalVessels} pots · Hit 1 cracks, Hit 2 shatters!`;
+      }
+
       this.gallerySpinBtn.label = state.gallerySpinEnabled
         ? 'Spin: On'
         : 'Spin: Off';
       this.gallerySpinBtn.style.backgroundColor = state.gallerySpinEnabled
         ? '#4d6d43'
         : undefined;
-      this.gallerySpinBtn.disabled = !hasSelected;
-      this.galleryRotLeftBtn.disabled = !hasSelected;
-      this.galleryRotRightBtn.disabled = !hasSelected;
-      this.galleryExportBtn.disabled = !hasSelected;
-      this.galleryDeleteBtn.disabled = !hasSelected;
+      this.gallerySpinBtn.disabled = !hasSelected || smashMode;
+      this.galleryRotLeftBtn.disabled = !hasSelected || smashMode;
+      this.galleryRotRightBtn.disabled = !hasSelected || smashMode;
+      this.galleryExportBtn.disabled = !hasSelected || smashMode;
+
+      this.gallerySmashBtn.label = smashMode
+        ? smashedCount > 0
+          ? `Exit (Del ${smashedCount})`
+          : 'Exit Bat'
+        : 'Smash (Bat)';
+      this.gallerySmashBtn.style.backgroundColor = smashMode
+        ? '#c46d29'
+        : undefined;
+      this.gallerySmashBtn.disabled = !hasSelected || isRestoring;
+
+      this.gallerySmashAllBtn.label = `Smash All (${items.length})`;
+      this.gallerySmashAllBtn.disabled =
+        !hasSelected ||
+        isRestoring ||
+        (smashMode && smashScope === 'all' && intactInView === 0);
+
+      const showRestore = hasDamage || isRestoring;
+      this.setShown(this.galleryRestoreBtn, showRestore);
+      this.galleryRestoreBtn.label = isRestoring
+        ? 'Reversing…'
+        : 'Restore (Time)';
+      this.galleryRestoreBtn.disabled = isRestoring;
+
+      this.galleryDeleteBtn.disabled = !hasSelected || isRestoring;
     }
 
     // Settings live state

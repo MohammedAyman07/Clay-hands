@@ -536,4 +536,222 @@ test('selectCursorHand, computeCursorPinchRatio, and isPointNearAnyRect support 
   assert.equal(isPointNearAnyRect(640, 640, hudRects, 6), false); // lower clay / above dock stays cursor-free
   assert.equal(isPointNearAnyRect(420, 686, hudRects, 6), true); // right on bottom dock edge
   assert.equal(isPointNearAnyRect(1100, 34, hudRects, 6), true); // directly on top-right quick button
+
+  const { isMetaQuestEnvironment } = await import('../src/xr/questEnvironment.ts');
+  assert.equal(
+    isMetaQuestEnvironment(
+      'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) OculusBrowser/34.0.0 VR Safari/537.36',
+      false
+    ),
+    true
+  );
+  assert.equal(
+    isMetaQuestEnvironment(
+      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/130.0.0.0',
+      true
+    ),
+    true
+  );
+  assert.equal(
+    isMetaQuestEnvironment(
+      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/130.0.0.0',
+      false
+    ),
+    false
+  );
 });
+
+test('PotterySmashSystem enforces non-overlapping distance, 2-hit crack -> shatter, hand focus, and time reversal', async () => {
+  const THREE = await import('three');
+  const {
+    PotterySmashSystem,
+    buildShardGeometriesFromClay,
+    computeGalleryLayoutPositions,
+    sampleReversedTransform,
+  } = await import('../src/gallery/PotterySmashSystem.ts');
+
+  // 1. Multi-vessel layout positions guarantee non-overlapping pairwise XZ distance
+  const single = computeGalleryLayoutPositions(1, 0);
+  assert.equal(single.length, 1);
+  assert.equal(single[0].x, 0);
+
+  for (const count of [2, 4, 7]) {
+    const radii = Array.from({ length: count }, (_, idx) => 0.1 + (idx % 3) * 0.02);
+    const slots = computeGalleryLayoutPositions(count, 1, radii);
+    assert.equal(slots.length, count);
+    for (let i = 0; i < slots.length; i++) {
+      for (let j = i + 1; j < slots.length; j++) {
+        const distXZ = Math.hypot(
+          slots[i].x - slots[j].x,
+          slots[i].z - slots[j].z
+        );
+        const minExpected =
+          radii[i] * slots[i].scale + radii[j] * slots[j].scale + 0.12;
+        assert.ok(
+          distXZ >= 0.36 && distXZ >= minExpected,
+          `Expected safe distance for pair (${i},${j}) with count=${count}, got ${distXZ.toFixed(3)}`
+        );
+      }
+    }
+  }
+
+  // 2. Procedural 3D ceramic shard slicing from ClayGeometry
+  const profile = createInitialClayProfile();
+  const clayGeo = new ClayGeometry(profile.ringCount, profile.angularSegments);
+  clayGeo.updateFromProfile(profile, 0);
+  const specs = buildShardGeometriesFromClay(clayGeo, 3, 5);
+  assert.equal(specs.length, 15);
+  for (const spec of specs) {
+    const pos = spec.geometry.attributes.position;
+    assert.ok(pos.count > 8);
+    assert.ok(spec.approxRadius > 0.01);
+    spec.geometry.dispose();
+  }
+  clayGeo.dispose();
+
+  // 3. Reversed trajectory sampling returns exact start/end frames
+  const outPos = new THREE.Vector3();
+  const outQuat = new THREE.Quaternion();
+  const frames = [
+    { px: 0, py: 0.2, pz: 0, qx: 0, qy: 0, qz: 0, qw: 1 },
+    { px: 0.4, py: -0.7, pz: 0.2, qx: 0, qy: 0.707, qz: 0, qw: 0.707 },
+  ];
+  sampleReversedTransform(frames, 0, outPos, outQuat);
+  assert.ok(Math.abs(outPos.x - 0.4) < 1e-4);
+  sampleReversedTransform(frames, 1, outPos, outQuat);
+  assert.ok(Math.abs(outPos.y - 0.2) < 1e-4);
+
+  // 4. Full 2-hit Crack -> Shatter, Hand Focus, Sweep & Time-Stone Restore cycle
+  let crackCalls = 0;
+  let shatterCalls = 0;
+  let restoreStarted = false;
+  let restoreCompleted = false;
+  const smashSys = new PotterySmashSystem({
+    onCeramicCrack: () => {
+      crackCalls++;
+    },
+    onCeramicShatter: () => {
+      shatterCalls++;
+    },
+    onTimeRestoreStart: () => {
+      restoreStarted = true;
+    },
+    onTimeRestoreComplete: () => {
+      restoreCompleted = true;
+    },
+  });
+
+  const makeSaved = (id: string, name: string): SavedPotteryItem => ({
+    id,
+    name,
+    createdAt: '2026-11-18T00:00:00.000Z',
+    glazeId: 'terracotta',
+    mode: 'free',
+    measurements: measureVessel(profile),
+    profile: {
+      outerRadii: [...profile.outerRadii],
+      innerRadii: [...profile.innerRadii],
+      heights: [...profile.heights],
+      openDepth: profile.openDepth,
+    },
+  });
+
+  const items = [makeSaved('pot_a', 'Sun Jar'), makeSaved('pot_b', 'Moon Vase')];
+  const buildMeshForTest = (item: typeof items[number]) => {
+    const cg = new ClayGeometry(item.profile.outerRadii.length, 24);
+    const p = createInitialClayProfile(item.profile.outerRadii.length, 24);
+    cg.updateFromProfile(p, 0);
+    const mat = new THREE.MeshPhysicalMaterial({ color: 0xb85d41 });
+    const mesh = new THREE.Mesh(cg.geometry, mat);
+    return { mesh, clayGeometry: cg, customMaterial: mat, customTexture: null };
+  };
+
+  // Single Smash (Bat) shows ONLY the selected vessel (not all vessels)
+  smashSys.enterSmashMode([items[0]], 'pot_a', buildMeshForTest, 'single');
+  assert.equal(smashSys.isSmashMode(), true);
+  assert.equal(smashSys.getScope(), 'single');
+  assert.equal(smashSys.getStatus().totalVessels, 1);
+  assert.equal(smashSys.getStatus().focusedVesselName, 'Sun Jar');
+  // 2-hit shatter -> pot_a is tracked in getSmashedItemIds() for deletion if not restored
+  smashSys.triggerBatSwing(1, true);
+  smashSys.update(0.4);
+  smashSys.triggerBatSwing(-1, true);
+  assert.deepEqual(smashSys.getSmashedItemIds(), ['pot_a']);
+  smashSys.exitSmashMode();
+
+  // Reset counters for Smash All & full 2-hit cycle check
+  crackCalls = 0;
+  shatterCalls = 0;
+  smashSys.enterSmashMode(items, 'pot_a', buildMeshForTest, 'all');
+
+  assert.equal(smashSys.isSmashMode(), true);
+  assert.equal(smashSys.getScope(), 'all');
+  assert.equal(smashSys.getIntactCount(), 2);
+  assert.equal(smashSys.getCrackedCount(), 0);
+  assert.equal(smashSys.getSmashedCount(), 0);
+  assert.deepEqual(smashSys.getSmashedItemIds(), []);
+
+  // Focus right vessel ('Moon Vase', positioned right of 'Sun Jar') via 3D VR hand coordinate
+  const rightLayouts = computeGalleryLayoutPositions(2, 0);
+  const rightHandWorld = new THREE.Vector3(
+    rightLayouts[1].x,
+    rightLayouts[1].y + 0.12,
+    rightLayouts[1].z + 0.14
+  );
+  smashSys.aimBatFromWorldPoint(rightHandWorld, new THREE.Vector3(0, 0, -1));
+  const focusedBeforeHit = smashSys.getStatus();
+  assert.equal(focusedBeforeHit.focusedVesselName, 'Moon Vase');
+  assert.equal(focusedBeforeHit.focusedVesselHits, 0);
+
+  // Hit 1: Cracks Moon Vase (1/2) without shattering yet
+  smashSys.triggerBatSwing(1, true);
+  assert.equal(crackCalls, 1);
+  assert.equal(shatterCalls, 0);
+  assert.equal(smashSys.getCrackedCount(), 1);
+  assert.equal(smashSys.getSmashedCount(), 0);
+  assert.equal(smashSys.getStatus().focusedVesselHits, 1);
+
+  // Immediate double-trigger during hitCooldown should not instant-break
+  smashSys.triggerBatSwing(-1, true);
+  assert.equal(smashSys.getCrackedCount(), 1);
+  assert.equal(smashSys.getSmashedCount(), 0);
+
+  // Advance past cooldown (0.34s), Hit 2 shatters Moon Vase cleanly
+  smashSys.update(0.4);
+  smashSys.triggerBatSwing(-1, true);
+  assert.equal(shatterCalls, 1);
+  assert.equal(smashSys.getSmashedCount(), 1);
+  assert.equal(smashSys.getCrackedCount(), 0);
+  assert.equal(smashSys.getIntactCount(), 1);
+  assert.deepEqual(smashSys.getSmashedItemIds(), ['pot_b']);
+
+  // Focus shifts / sweep all cracks remaining intact Sun Jar on Pass 1 & shatters on Pass 2
+  smashSys.smashAllWithBatSweep();
+  for (let i = 0; i < 45; i++) {
+    smashSys.update(0.03);
+  }
+  assert.ok(crackCalls >= 2);
+  assert.ok(shatterCalls >= 2);
+  assert.equal(smashSys.getSmashedCount(), 2);
+  assert.equal(smashSys.getIntactCount(), 0);
+  assert.deepEqual(smashSys.getSmashedItemIds().sort(), ['pot_a', 'pot_b']);
+
+  // Trigger Doctor Strange Time-Stone Restore -> heals everything to 0/2 intact & clears deletion list
+  assert.equal(smashSys.startRestore(), true);
+  assert.equal(restoreStarted, true);
+  assert.equal(smashSys.isRestoring(), true);
+
+  for (let i = 0; i < 90; i++) {
+    smashSys.update(0.03);
+  }
+  assert.equal(restoreCompleted, true);
+  assert.equal(smashSys.isRestoring(), false);
+  assert.equal(smashSys.getSmashedCount(), 0);
+  assert.equal(smashSys.getCrackedCount(), 0);
+  assert.equal(smashSys.getIntactCount(), 2);
+  assert.deepEqual(smashSys.getSmashedItemIds(), []);
+  assert.equal(smashSys.getStatus().focusedVesselHits, 0);
+
+  smashSys.dispose();
+});
+

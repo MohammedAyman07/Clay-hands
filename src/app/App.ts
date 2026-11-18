@@ -3,6 +3,7 @@ import * as xb from 'xrblocks';
 import { AudioManager } from '../audio/AudioManager.ts';
 import { GalleryManager } from '../gallery/GalleryManager.ts';
 import { PotteryExporter } from '../gallery/PotteryExporter.ts';
+import { PotterySmashSystem } from '../gallery/PotterySmashSystem.ts';
 import { GLAZE_CATALOG, GlazeManager } from '../kiln/GlazeManager.ts';
 import { KilnController, type KilnStatus } from '../kiln/KilnController.ts';
 import { ClaySculptingController } from '../pottery/ClaySculptingController.ts';
@@ -93,6 +94,7 @@ export class ClayHandsApp extends xb.Script {
   private paintedGlazeMaterial!: THREE.MeshPhysicalMaterial;
   private glazeManager!: GlazeManager;
   private gallery!: GalleryManager;
+  private smashSystem!: PotterySmashSystem;
   private ui!: UIManager;
   private vrPanel!: VRStudioPanel;
 
@@ -107,9 +109,18 @@ export class ClayHandsApp extends xb.Script {
   private readonly _hoverPoint = new THREE.Vector3();
   private readonly _cameraNormal = new THREE.Vector3();
   private readonly _clayCenterWorld = new THREE.Vector3();
+  private readonly _xrBatPos = new THREE.Vector3();
+  private readonly _xrBatDir = new THREE.Vector3();
   private sculptingProxy!: THREE.Mesh;
   private mouseSculpting = false;
   private mousePainting = false;
+  private mouseGallerySwinging = false;
+  private handGalleryPinching = false;
+  private vrBatTriggerHeld = false;
+  private handGallerySwingCooldown = 0;
+  private readonly onUnloadCommitSmash = () => {
+    this.commitUnrestoredSmashedVessels();
+  };
   private handBrushActive = false;
   private glazePaintMode = true;
   private glazeSpinEnabled = false;
@@ -172,6 +183,24 @@ export class ClayHandsApp extends xb.Script {
     this.painter = new VesselPainter(maxAniso);
     this.glazeManager = new GlazeManager(maxAniso);
     this.gallery = new GalleryManager(this.glazeManager);
+    this.smashSystem = new PotterySmashSystem({
+      onBatSwing: (intensity) => this.audio.playBatSwing(intensity),
+      onCeramicCrack: () => {
+        this.audio.playCeramicCrack(0.9);
+        this.rerenderUI();
+      },
+      onCeramicShatter: (count) => this.audio.playCeramicShatter(count),
+      onTimeRestoreStart: () => {
+        this.audio.playTimeStoneRestore();
+        this.rerenderUI();
+      },
+      onTimeRestoreComplete: () => {
+        this.rerenderUI();
+      },
+      onStateChanged: () => {
+        this.rerenderUI();
+      },
+    });
     this.thumbnails.prewarmAll(renderer, this.glazeManager);
 
     this.paintedRawMaterial = new THREE.MeshPhysicalMaterial({
@@ -216,8 +245,9 @@ export class ClayHandsApp extends xb.Script {
     this.kiln.group.rotation.y = -0.52;
     this.add(this.kiln.group);
 
-    // Mount gallery pedestal display
+    // Mount gallery pedestal display & smash system
     this.sceneManager.galleryPedestalAnchor.add(this.gallery.displayGroup);
+    this.gallery.displayGroup.add(this.smashSystem.group);
 
     // Apply initial settings
     this.applySettings(this.state.settings);
@@ -299,6 +329,9 @@ export class ClayHandsApp extends xb.Script {
       onSaveToGallery: (name) => this.saveCurrentToGallery(name),
       onSelectGalleryItem: (id) => this.selectGalleryItem(id),
       onDeleteGalleryItem: (id) => this.deleteGalleryItem(id),
+      onToggleGallerySmash: () => this.toggleGallerySmash(),
+      onSmashAllGallery: () => this.smashAllGallery(),
+      onRestoreGallery: () => this.restoreGallery(),
       onExportGLB: (id) => void this.exportCreationGLB(id),
       onRotateGalleryVessel: (deltaRad) => {
         this.gallerySpinEnabled = false;
@@ -432,6 +465,9 @@ export class ClayHandsApp extends xb.Script {
         onSelectGalleryItem: (id) => this.selectGalleryItem(id),
         onRenameGalleryItem: (id, name) => this.renameGalleryItem(id, name),
         onDeleteGalleryItem: (id) => this.deleteGalleryItem(id),
+        onToggleGallerySmash: () => this.toggleGallerySmash(),
+        onSmashAllGallery: () => this.smashAllGallery(),
+        onRestoreGallery: () => this.restoreGallery(),
         onExportGLB: (id) => void this.exportCreationGLB(id),
         onUpdateSettings: (partial) => this.updateSettings(partial),
         onMouseToolChange: (tool) => {
@@ -530,7 +566,7 @@ export class ClayHandsApp extends xb.Script {
           this.postCalibrationScreen = 'tutorial';
           const res = await this.handTracker.startWebcamAndModel();
           if (res.ok) {
-            if (!this.handCursorUserDisabled) {
+            if (!this.shouldHideHandCursor() && !this.handCursorUserDisabled) {
               this.handCursorActive = true;
               this.handCursor.setEnabled(true);
             }
@@ -545,17 +581,27 @@ export class ClayHandsApp extends xb.Script {
     );
 
     this.bindPointerAndKeyboard(renderer.domElement);
+    window.addEventListener('pagehide', this.onUnloadCommitSmash);
+    window.addEventListener('beforeunload', this.onUnloadCommitSmash);
 
     await this.xrManager.probeSupport();
     this.navigate('welcome');
     void this.tryAutoStartHandCursor();
   }
 
+  private shouldHideHandCursor(): boolean {
+    return this.xrManager.isMetaQuest();
+  }
+
   private async tryAutoStartHandCursor(): Promise<void> {
     await Promise.resolve();
-    if (this.xrManager.inXRSession || this.handCursorUserDisabled) return;
+    if (this.shouldHideHandCursor() || this.handCursorUserDisabled) return;
     const res = await this.handTracker.startWebcamAndModel();
-    if (res.ok && !this.xrManager.inXRSession && !this.handCursorUserDisabled) {
+    if (
+      res.ok &&
+      !this.shouldHideHandCursor() &&
+      !this.handCursorUserDisabled
+    ) {
       this.handCursorActive = true;
       this.handCursor.setEnabled(true);
       this.rerenderUI();
@@ -595,6 +641,28 @@ export class ClayHandsApp extends xb.Script {
     canvas.addEventListener('pointerdown', (e) => {
       this.audio.unlock();
 
+      // Bat smash swing in Gallery when Smash Mode is active
+      if (
+        this.state.screen === 'gallery' &&
+        this.smashSystem.isSmashMode() &&
+        !this.smashSystem.isRestoring() &&
+        e.button === 0
+      ) {
+        const rect = canvas.getBoundingClientRect();
+        this.pointerNDC.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
+        this.pointerNDC.y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
+        this.mouseGallerySwinging = true;
+        this.mouseLastX = e.clientX;
+        this.sceneManager.setOrbitEnabled(false);
+        this.smashSystem.aimBatFromNDC(
+          this.pointerNDC.x,
+          this.pointerNDC.y,
+          xb.core.camera
+        );
+        this.smashSystem.triggerBatSwing(-1, true);
+        return;
+      }
+
       // Brush painting in Studio/Tutorial (Brush tool) or Glaze & Paint screen
       if (isBrushContext() && e.button === 0) {
         const hit = raycastVessel(e.clientX, e.clientY);
@@ -633,6 +701,25 @@ export class ClayHandsApp extends xb.Script {
     });
 
     window.addEventListener('pointermove', (e) => {
+      if (this.state.screen === 'gallery' && this.smashSystem.isSmashMode()) {
+        const rect = canvas.getBoundingClientRect();
+        this.pointerNDC.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
+        this.pointerNDC.y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
+        this.smashSystem.aimBatFromNDC(
+          this.pointerNDC.x,
+          this.pointerNDC.y,
+          xb.core.camera
+        );
+        if (this.mouseGallerySwinging) {
+          const dx = e.clientX - this.mouseLastX;
+          this.mouseLastX = e.clientX;
+          if (Math.abs(dx) > 10) {
+            this.smashSystem.triggerBatSwing(dx, true);
+          }
+        }
+        return;
+      }
+
       if (isBrushContext()) {
         const hit = raycastVessel(e.clientX, e.clientY);
         if (hit && hit.uv) {
@@ -732,6 +819,12 @@ export class ClayHandsApp extends xb.Script {
     });
 
     const endDrag = () => {
+      if (this.mouseGallerySwinging) {
+        this.mouseGallerySwinging = false;
+        if (this.state.screen === 'gallery') {
+          this.sceneManager.setOrbitEnabled(true);
+        }
+      }
       if (this.mousePainting) {
         this.mousePainting = false;
         this.painter.setPinchPreview(false);
@@ -982,6 +1075,13 @@ export class ClayHandsApp extends xb.Script {
     const prevScreen = this.state.screen;
     this.state.navigate(screen);
     this.stopHandBrushSession();
+    if (screen !== 'gallery' && this.smashSystem.isSmashMode()) {
+      this.commitUnrestoredSmashedVessels();
+      this.smashSystem.exitSmashMode();
+      this.mouseGallerySwinging = false;
+      this.sceneManager.setOrbitEnabled(true);
+      this.sceneManager.setGalleryFraming(this.gallery.getItems().length, false);
+    }
 
     const musicMood =
       screen === 'glaze'
@@ -1058,7 +1158,9 @@ export class ClayHandsApp extends xb.Script {
       const targetId = this.state.selectedGalleryItemId ?? items[0]?.id ?? null;
       this.state.selectedGalleryItemId = targetId;
       const item = items.find((i) => i.id === targetId) ?? null;
-      this.gallery.showItemOnPedestal(item);
+      if (!this.smashSystem.isSmashMode()) {
+        this.gallery.showItemOnPedestal(item);
+      }
     }
 
     if (this.xrManager.inXRSession) {
@@ -1087,6 +1189,12 @@ export class ClayHandsApp extends xb.Script {
 
   private async toggleHandCursor(): Promise<void> {
     this.audio.unlock();
+    if (this.shouldHideHandCursor()) {
+      this.handCursorActive = false;
+      this.handCursor.setEnabled(false);
+      this.rerenderUI();
+      return;
+    }
     if (this.handCursorActive) {
       this.handCursorUserDisabled = true;
       this.handCursorActive = false;
@@ -1165,7 +1273,7 @@ export class ClayHandsApp extends xb.Script {
     if (inputMode === 'webcam') {
       this.state.inputMode = 'webcam';
       if (this.handTracker.isReady) {
-        if (!this.handCursorUserDisabled) {
+        if (!this.shouldHideHandCursor() && !this.handCursorUserDisabled) {
           this.handCursorActive = true;
           this.handCursor.setEnabled(true);
         }
@@ -1192,7 +1300,7 @@ export class ClayHandsApp extends xb.Script {
       this.rerenderUI();
       return;
     }
-    if (!this.handCursorUserDisabled) {
+    if (!this.shouldHideHandCursor() && !this.handCursorUserDisabled) {
       this.handCursorActive = true;
       this.handCursor.setEnabled(true);
     }
@@ -1338,7 +1446,65 @@ export class ClayHandsApp extends xb.Script {
     this.rerenderUI();
   }
 
+  private commitUnrestoredSmashedVessels(): number {
+    if (!this.smashSystem.isSmashMode()) return 0;
+    const smashedIds = this.smashSystem.getSmashedItemIds();
+    if (smashedIds.length === 0) return 0;
+    let deletedCount = 0;
+    for (const id of smashedIds) {
+      if (this.gallery.delete(id).ok) {
+        deletedCount++;
+      }
+    }
+    const remaining = this.gallery.getItems();
+    if (
+      !this.state.selectedGalleryItemId ||
+      !remaining.some((item) => item.id === this.state.selectedGalleryItemId)
+    ) {
+      this.state.selectedGalleryItemId = remaining[0]?.id ?? null;
+    }
+    return deletedCount;
+  }
+
   private selectGalleryItem(id: string): void {
+    if (this.smashSystem.isRestoring()) return;
+    if (this.smashSystem.isSmashMode()) {
+      if (this.smashSystem.getScope() === 'single') {
+        if (
+          id === this.state.selectedGalleryItemId &&
+          this.smashSystem.getStatus().totalVessels === 1
+        ) {
+          this.rerenderUI();
+          return;
+        }
+        this.commitUnrestoredSmashedVessels();
+        const items = this.gallery.getItems();
+        const nextItem = items.find((i) => i.id === id) ?? items[0] ?? null;
+        if (!nextItem) {
+          this.smashSystem.exitSmashMode();
+          this.mouseGallerySwinging = false;
+          this.sceneManager.setOrbitEnabled(true);
+          this.sceneManager.setGalleryFraming(0, false);
+          this.state.selectedGalleryItemId = null;
+          this.gallery.showItemOnPedestal(null);
+        } else {
+          this.state.selectedGalleryItemId = nextItem.id;
+          this.smashSystem.enterSmashMode(
+            [nextItem],
+            nextItem.id,
+            (it) => this.gallery.buildMeshFromSaved(it),
+            'single'
+          );
+          this.sceneManager.setGalleryFraming(1, true);
+        }
+      } else {
+        this.state.selectedGalleryItemId = id;
+        this.smashSystem.focusVesselById(id);
+      }
+      this.rerenderUI();
+      return;
+    }
+
     this.state.selectedGalleryItemId = id;
     const item = this.gallery.getItems().find((i) => i.id === id) ?? null;
     this.gallery.showItemOnPedestal(item);
@@ -1353,13 +1519,100 @@ export class ClayHandsApp extends xb.Script {
   }
 
   private deleteGalleryItem(id: string): void {
+    if (this.smashSystem.isRestoring()) return;
+    const wasSmash = this.smashSystem.isSmashMode();
+    if (wasSmash) {
+      this.commitUnrestoredSmashedVessels();
+      this.smashSystem.exitSmashMode();
+      this.mouseGallerySwinging = false;
+      this.sceneManager.setOrbitEnabled(true);
+      this.sceneManager.setGalleryFraming(0, false);
+    }
     const res = this.gallery.delete(id);
-    if (res.ok) {
+    if (res.ok || wasSmash) {
       const items = this.gallery.getItems();
       this.state.selectedGalleryItemId = items[0]?.id ?? null;
       const nextItem =
         items.find((i) => i.id === this.state.selectedGalleryItemId) ?? null;
       this.gallery.showItemOnPedestal(nextItem);
+      this.rerenderUI();
+    }
+  }
+
+  private toggleGallerySmash(): void {
+    if (this.smashSystem.isRestoring()) return;
+    if (this.smashSystem.isSmashMode()) {
+      // If any pottery was shattered and not restored, delete it permanently upon exiting
+      this.commitUnrestoredSmashedVessels();
+      this.smashSystem.exitSmashMode();
+      this.mouseGallerySwinging = false;
+      this.sceneManager.setOrbitEnabled(true);
+      const remaining = this.gallery.getItems();
+      this.sceneManager.setGalleryFraming(remaining.length, false);
+      const selected =
+        remaining.find((i) => i.id === this.state.selectedGalleryItemId) ??
+        remaining[0] ??
+        null;
+      this.state.selectedGalleryItemId = selected?.id ?? null;
+      this.gallery.showItemOnPedestal(selected);
+    } else {
+      const items = this.gallery.getItems();
+      if (items.length > 0) {
+        const selected =
+          items.find((i) => i.id === this.state.selectedGalleryItemId) ??
+          items[0];
+        this.state.selectedGalleryItemId = selected.id;
+        this.gallery.clearPedestal();
+        // Smash (Bat) shows ONLY the selected pottery!
+        this.smashSystem.enterSmashMode(
+          [selected],
+          selected.id,
+          (item) => this.gallery.buildMeshFromSaved(item),
+          'single'
+        );
+        this.sceneManager.setGalleryFraming(1, true);
+      }
+    }
+    this.rerenderUI();
+  }
+
+  private smashAllGallery(): void {
+    if (this.smashSystem.isRestoring()) return;
+    if (
+      this.smashSystem.isSmashMode() &&
+      this.smashSystem.getScope() === 'single'
+    ) {
+      this.commitUnrestoredSmashedVessels();
+      this.smashSystem.exitSmashMode();
+    }
+
+    const items = this.gallery.getItems();
+    if (items.length === 0) {
+      this.mouseGallerySwinging = false;
+      this.sceneManager.setOrbitEnabled(true);
+      this.sceneManager.setGalleryFraming(0, false);
+      this.gallery.showItemOnPedestal(null);
+      this.rerenderUI();
+      return;
+    }
+
+    if (!this.smashSystem.isSmashMode()) {
+      this.gallery.clearPedestal();
+      // Smash All shows ALL saved pottery spaced cleanly
+      this.smashSystem.enterSmashMode(
+        items,
+        this.state.selectedGalleryItemId,
+        (item) => this.gallery.buildMeshFromSaved(item),
+        'all'
+      );
+      this.sceneManager.setGalleryFraming(items.length, true);
+    }
+    this.smashSystem.smashAllWithBatSweep();
+    this.rerenderUI();
+  }
+
+  private restoreGallery(): void {
+    if (this.smashSystem.startRestore()) {
       this.rerenderUI();
     }
   }
@@ -1387,6 +1640,7 @@ export class ClayHandsApp extends xb.Script {
     this.handTracker.setSmoothing(settings.handSensitivity);
     this.gestureRecognizer.setSensitivity(settings.handSensitivity);
     this.sceneManager.setReducedMotion(settings.reducedMotion);
+    this.smashSystem.setReducedMotion(settings.reducedMotion);
     this.audio.applySettings(settings);
   }
 
@@ -1407,6 +1661,7 @@ export class ClayHandsApp extends xb.Script {
   }
 
   private buildHUDState(): StudioHUDState {
+    const smashStatus = this.smashSystem.getStatus();
     return {
       stage: this.sculpting.stage,
       gesture: this.currentGesture,
@@ -1441,7 +1696,16 @@ export class ClayHandsApp extends xb.Script {
       vrSupported: this.xrManager.vrSupported,
       inVR: this.xrManager.inXRSession,
       vrMessage: this.xrManager.statusMessage,
-      handCursorActive: this.handCursorActive,
+      handCursorActive: this.handCursorActive && !this.shouldHideHandCursor(),
+      showHandCursorControl: !this.shouldHideHandCursor(),
+      gallerySmashMode: smashStatus.smashMode,
+      gallerySmashScope: smashStatus.smashScope,
+      galleryCrackedCount: smashStatus.crackedCount,
+      gallerySmashedCount: smashStatus.smashedCount,
+      galleryTotalVessels: smashStatus.totalVessels,
+      galleryIsRestoring: smashStatus.isRestoring,
+      galleryFocusedName: smashStatus.focusedVesselName,
+      galleryFocusedHits: smashStatus.focusedVesselHits,
       tutorialMatched: this.tutorialMatched,
       tutorialProgress: this.tutorial.getProgress(),
       tutorialFinishedAll: this.tutorial.finishedAll,
@@ -1463,6 +1727,7 @@ export class ClayHandsApp extends xb.Script {
     this.audio.unlock();
     this.xrManager.inXRSession = true;
     this.vrPanel.visible = true;
+    this.handCursor.setEnabled(false);
     this.handCursor.hide();
     if (
       this.state.screen === 'webcam-permission' ||
@@ -1485,7 +1750,11 @@ export class ClayHandsApp extends xb.Script {
   public onXRSessionEnded(): void {
     this.xrManager.inXRSession = false;
     this.vrPanel.visible = false;
-    if (this.handCursorActive && this.handTracker.isReady) {
+    if (
+      this.handCursorActive &&
+      this.handTracker.isReady &&
+      !this.shouldHideHandCursor()
+    ) {
       this.handCursor.setEnabled(true);
     }
     this.wheel.group.position.set(0, 0, 0);
@@ -1552,7 +1821,8 @@ export class ClayHandsApp extends xb.Script {
     const playSculptMode =
       (this.state.screen === 'studio' ||
         this.state.screen === 'tutorial' ||
-        this.state.screen === 'glaze') &&
+        this.state.screen === 'glaze' ||
+        (this.state.screen === 'gallery' && this.smashSystem.isSmashMode())) &&
       !this.showResetConfirm &&
       !this.showCelebration;
 
@@ -1566,12 +1836,12 @@ export class ClayHandsApp extends xb.Script {
         : 0;
     const suppressCursorForSculpt = activeSculptHands >= 2;
 
-    // 2D hand cursor stays active on all menus, hidden over clay while sculpting, and wakes on HUD buttons
+    // 2D hand cursor stays hidden on Meta Quest & XR sessions; active on desktop webcam menus
     const cursorStatus = this.handCursor.update(
       this.latestFrame,
       this.state.settings.handedness,
       this.state.settings.handSensitivity,
-      this.xrManager.inXRSession,
+      this.shouldHideHandCursor(),
       playSculptMode,
       suppressCursorForSculpt
     );
@@ -1804,15 +2074,92 @@ export class ClayHandsApp extends xb.Script {
       );
     }
 
-    // 6. Gallery gentle rotation if not paused
+    // 6. Gallery Bat Smash, Time-Stone Reversal, or gentle pedestal rotation
     if (this.state.screen === 'gallery') {
-      const galMesh = this.gallery.getActiveMesh();
-      if (
-        galMesh &&
-        this.gallerySpinEnabled &&
-        !this.state.settings.reducedMotion
-      ) {
-        galMesh.rotation.y += dt * 0.35;
+      const smashStatus = this.smashSystem.getStatus();
+      if (smashStatus.smashMode) {
+        if (this.handGallerySwingCooldown > 0) {
+          this.handGallerySwingCooldown = Math.max(0, this.handGallerySwingCooldown - dt);
+        }
+
+        if (!smashStatus.isRestoring && !this.mouseGallerySwinging && !pauseForUI) {
+          if (this.xrManager.inXRSession) {
+            const vrPose = this.xrManager.getPrimaryVRBatPose(
+              this.state.settings.handedness,
+              this._xrBatPos,
+              this._xrBatDir
+            );
+            if (vrPose.active) {
+              this.smashSystem.aimBatFromWorldPoint(this._xrBatPos, this._xrBatDir);
+              const wantsStrike =
+                vrPose.worldSpeed > 0.95 ||
+                (vrPose.pinching && !this.handGalleryPinching) ||
+                (vrPose.triggerPressed && !this.vrBatTriggerHeld);
+              if (wantsStrike && this.handGallerySwingCooldown <= 0) {
+                this.smashSystem.triggerBatSwing(
+                  vrPose.source === 'hand' ? -1 : 1,
+                  true
+                );
+                this.handGallerySwingCooldown = 0.36;
+              }
+              this.handGalleryPinching = vrPose.pinching;
+              this.vrBatTriggerHeld = vrPose.triggerPressed;
+            }
+          } else if (
+            this.latestFrame.hands.length > 0 &&
+            (this.state.inputMode === 'webcam' || this.handCursorActive)
+          ) {
+            const hand =
+              this.latestFrame.hands.find(
+                (h) => h.handedness === this.state.settings.handedness
+              ) ?? this.latestFrame.hands[0];
+            const sens = this.state.settings.handSensitivity;
+            const spanX = Math.max(0.14, activeCal.maxSpan * 0.65);
+            const spanY = Math.max(
+              0.16,
+              (activeCal.maxY - activeCal.minY) * 0.6
+            );
+            const midY = (activeCal.minY + activeCal.maxY) * 0.5;
+            const ndcX = THREE.MathUtils.clamp(
+              ((activeCal.centerX - hand.palmCenter.x) / spanX) * sens,
+              -1,
+              1
+            );
+            const ndcY = THREE.MathUtils.clamp(
+              ((midY - hand.palmCenter.y) / spanY) * sens,
+              -1,
+              1
+            );
+            this.smashSystem.aimBatFromNDC(ndcX, ndcY, xb.core.camera);
+            const pinching =
+              hand.handSpan > 0 && hand.pinchDistance / hand.handSpan < 0.4;
+            const fastSwipe = hand.speed > 0.34;
+            const forwardPunch = hand.velocity.z < -0.26;
+            if (
+              (fastSwipe ||
+                forwardPunch ||
+                (pinching && !this.handGalleryPinching)) &&
+              this.handGallerySwingCooldown <= 0
+            ) {
+              this.smashSystem.triggerBatSwing(
+                hand.velocity.x >= 0 ? -1 : 1,
+                true
+              );
+              this.handGallerySwingCooldown = 0.36;
+            }
+            this.handGalleryPinching = pinching;
+          }
+        }
+        this.smashSystem.update(dt, xb.core.camera);
+      } else {
+        const galMesh = this.gallery.getActiveMesh();
+        if (
+          galMesh &&
+          this.gallerySpinEnabled &&
+          !this.state.settings.reducedMotion
+        ) {
+          galMesh.rotation.y += dt * 0.35;
+        }
       }
     }
 
@@ -1827,6 +2174,7 @@ export class ClayHandsApp extends xb.Script {
     // 8. Sync Quest VR spatial UI panel across all screens
     if (this.xrManager.inXRSession && this.vrPanel.visible) {
       const tutStep = this.tutorial.getCurrentStep();
+      const smashStatusGallery = this.smashSystem.getStatus();
       this.vrPanel.sync({
         screen: this.state.screen,
         mode: this.state.mode,
@@ -1866,6 +2214,14 @@ export class ClayHandsApp extends xb.Script {
         galleryItems: this.gallery.getItems(),
         selectedGalleryId: this.state.selectedGalleryItemId,
         gallerySpinEnabled: this.gallerySpinEnabled,
+        gallerySmashMode: smashStatusGallery.smashMode,
+        gallerySmashScope: smashStatusGallery.smashScope,
+        galleryTotalVessels: smashStatusGallery.totalVessels,
+        galleryCrackedCount: smashStatusGallery.crackedCount,
+        gallerySmashedCount: smashStatusGallery.smashedCount,
+        galleryIsRestoring: smashStatusGallery.isRestoring,
+        galleryFocusedName: smashStatusGallery.focusedVesselName,
+        galleryFocusedHits: smashStatusGallery.focusedVesselHits,
         tutorialStepIndex: this.tutorial.currentStepIndex,
         tutorialTitle: tutStep.title,
         tutorialCue: tutStep.handCue,
@@ -1879,6 +2235,9 @@ export class ClayHandsApp extends xb.Script {
   }
 
   public dispose(): void {
+    this.commitUnrestoredSmashedVessels();
+    window.removeEventListener('pagehide', this.onUnloadCommitSmash);
+    window.removeEventListener('beforeunload', this.onUnloadCommitSmash);
     this.handCursor.dispose();
     this.handTracker.dispose();
     this.handMapper.dispose();
@@ -1889,6 +2248,7 @@ export class ClayHandsApp extends xb.Script {
     this.wheel.dispose();
     this.kiln.dispose();
     this.glazeManager.dispose();
+    this.smashSystem.dispose();
     this.gallery.dispose();
     this.sceneManager.dispose();
     this.audio.dispose();

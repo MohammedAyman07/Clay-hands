@@ -503,6 +503,51 @@ h2 {
   background: #5b7f4f;
 }
 
+.btn-smash {
+  background: #8a5228;
+  border-color: #5d3315;
+  color: #fff8ee;
+  box-shadow: inset 0 1px 0 rgba(255, 228, 196, 0.25);
+}
+
+.btn-smash:hover:not(:disabled) {
+  background: #a46434;
+}
+
+.btn-smash-active {
+  background: #c46d29;
+  border-color: #7c3f11;
+  color: #fffaf2;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 236, 206, 0.35),
+    0 0 0 2px rgba(196, 109, 41, 0.28);
+}
+
+.btn-timestorm {
+  background: linear-gradient(135deg, #106f48 0%, #1da86a 100%);
+  border-color: #0b5134;
+  color: #ecfff5;
+  font-weight: 700;
+  box-shadow:
+    inset 0 1px 0 rgba(176, 255, 214, 0.45),
+    0 4px 14px rgba(24, 176, 104, 0.34);
+}
+
+.btn-timestorm:hover:not(:disabled) {
+  background: linear-gradient(135deg, #148556 0%, #27c27c 100%);
+}
+
+.hud-card-timestorm {
+  border-color: #1ba467 !important;
+  box-shadow:
+    inset 0 1px 0 rgba(206, 255, 229, 0.7),
+    0 12px 28px rgba(15, 118, 72, 0.28) !important;
+}
+
+.hud-card-timestorm .eyebrow {
+  color: #0e7c4d;
+}
+
 .chip {
   border: 1px solid var(--timber-soft);
   background: var(--linen-card);

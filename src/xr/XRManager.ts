@@ -7,6 +7,10 @@ import type {
   Vec3,
 } from '../types.ts';
 
+import { isMetaQuestEnvironment } from './questEnvironment.ts';
+
+export { isMetaQuestEnvironment };
+
 /**
  * Optional WebXR session & hand-joint bridge.
  * Never makes a headset mandatory; gracefully reports availability.
@@ -18,6 +22,13 @@ export class XRManager {
   public handTrackingActive = false;
   public statusMessage = 'Checking WebXR support…';
 
+  public isMetaQuest(): boolean {
+    return isMetaQuestEnvironment(
+      typeof navigator !== 'undefined' ? navigator.userAgent : '',
+      this.inXRSession
+    );
+  }
+
   private readonly prevPalmPos = new Map<'left' | 'right', THREE.Vector3>();
   private prevTimestamp = 0;
 
@@ -28,6 +39,14 @@ export class XRManager {
   private readonly _ringTip = new THREE.Vector3();
   private readonly _pinkyTip = new THREE.Vector3();
   private readonly _localPos = new THREE.Vector3();
+  private readonly _batWrist = new THREE.Vector3();
+  private readonly _batIndexMcp = new THREE.Vector3();
+  private readonly _batIndexTip = new THREE.Vector3();
+  private readonly _batThumbTip = new THREE.Vector3();
+  private readonly _prevVRBatPos = new THREE.Vector3();
+  private readonly _ctrlQuat = new THREE.Quaternion();
+  private hasPrevVRBatPos = false;
+  private vrBatLastTime = 0;
 
   public async probeSupport(): Promise<void> {
     if (typeof navigator === 'undefined' || !('xr' in navigator) || !navigator.xr) {
@@ -267,6 +286,157 @@ export class XRManager {
   }
 
   /**
+   * Samples real WebXR world-space controller or tracked hand pose for VR Gallery
+   * Bat Smash without mixing wheel-normalized [0..1] coordinates into world space.
+   */
+  public getPrimaryVRBatPose(
+    preferredHand: 'left' | 'right',
+    outPos: THREE.Vector3,
+    outDir: THREE.Vector3
+  ): {
+    active: boolean;
+    source: 'controller' | 'hand' | 'none';
+    pinching: boolean;
+    triggerPressed: boolean;
+    worldSpeed: number;
+  } {
+    const input = xb.core?.input;
+    if (!this.inXRSession || !input) {
+      this.hasPrevVRBatPos = false;
+      return {
+        active: false,
+        source: 'none',
+        pinching: false,
+        triggerPressed: false,
+        worldSpeed: 0,
+      };
+    }
+
+    const now = performance.now();
+    const dtSec = this.vrBatLastTime
+      ? Math.max(0.012, (now - this.vrBatLastTime) / 1000)
+      : 0.03;
+    this.vrBatLastTime = now;
+
+    // 1. Prefer an actively gripping/selecting Touch controller, or tracked controller with valid pose
+    const controllers = input.controllers ?? [];
+    let bestCtrl:
+      | (THREE.Object3D & {
+          userData?: { selected?: boolean; squeezed?: boolean };
+          inputSource?: XRInputSource;
+        })
+      | null = null;
+    for (let i = 0; i < controllers.length; i++) {
+      const c = controllers[i] as unknown as THREE.Object3D & {
+        userData?: { selected?: boolean; squeezed?: boolean };
+        inputSource?: XRInputSource;
+      };
+      if (!c || c.visible === false) continue;
+      c.getWorldPosition(outPos);
+      if (outPos.lengthSq() < 1e-6) continue;
+      if (c.userData?.selected || c.userData?.squeezed) {
+        bestCtrl = c;
+        break;
+      }
+      if (
+        !bestCtrl ||
+        c.inputSource?.handedness === preferredHand
+      ) {
+        bestCtrl = c;
+      }
+    }
+
+    // Check WebXR hand tracking joints in true 3D world space
+    const hands = input.hands ?? [];
+    let bestHandIdx = -1;
+    let bestHandPinch = false;
+    for (let i = 0; i < hands.length; i++) {
+      const h = hands[i] as THREE.XRHandSpace & { inputSource?: XRInputSource };
+      if (!h || !h.visible || !h.joints) continue;
+      const wrist = h.joints['wrist'];
+      const thumbTip = h.joints['thumb-tip'];
+      const indexTip = h.joints['index-finger-tip'];
+      if (!wrist?.visible || !thumbTip?.visible || !indexTip?.visible) continue;
+      wrist.getWorldPosition(this._batWrist);
+      if (this._batWrist.lengthSq() < 1e-6) continue;
+
+      thumbTip.getWorldPosition(this._batThumbTip);
+      indexTip.getWorldPosition(this._batIndexTip);
+      const pinch = this._batThumbTip.distanceTo(this._batIndexTip) < 0.036;
+      const handMatchesPref = h.inputSource?.handedness === preferredHand;
+
+      if (bestHandIdx === -1 || pinch || (handMatchesPref && !bestHandPinch)) {
+        bestHandIdx = i;
+        bestHandPinch = pinch;
+        if (pinch) break;
+      }
+    }
+
+    let source: 'controller' | 'hand' | 'none' = 'none';
+    let pinching = false;
+    let triggerPressed = false;
+
+    if (bestHandIdx >= 0 && (!bestCtrl || !bestCtrl.userData?.selected)) {
+      // Use real 3D WebXR hand palm center & forward ray
+      const h = hands[bestHandIdx] as THREE.XRHandSpace;
+      const wrist = h.joints['wrist'];
+      const indexTip = h.joints['index-finger-tip'];
+      const middleMcp =
+        h.joints['middle-finger-metacarpal'] ??
+        h.joints['index-finger-metacarpal'];
+      if (wrist && indexTip) {
+        wrist.getWorldPosition(this._batWrist);
+        indexTip.getWorldPosition(this._batIndexTip);
+        if (middleMcp?.visible) {
+          middleMcp.getWorldPosition(this._batIndexMcp);
+          outPos.copy(this._batWrist).lerp(this._batIndexMcp, 0.55);
+          outDir.copy(this._batIndexTip).sub(this._batWrist);
+        } else {
+          outPos.copy(this._batWrist).lerp(this._batIndexTip, 0.42);
+          outDir.copy(this._batIndexTip).sub(this._batWrist);
+        }
+        if (outDir.lengthSq() < 1e-6) outDir.set(0, 0, -1);
+        else outDir.normalize();
+
+        source = 'hand';
+        pinching = bestHandPinch;
+      }
+    } else if (bestCtrl) {
+      bestCtrl.getWorldPosition(outPos);
+      bestCtrl.getWorldQuaternion(this._ctrlQuat);
+      outDir.set(0, 0, -1).applyQuaternion(this._ctrlQuat).normalize();
+      source = 'controller';
+      triggerPressed = Boolean(
+        bestCtrl.userData?.selected || bestCtrl.userData?.squeezed
+      );
+    } else {
+      this.hasPrevVRBatPos = false;
+      return {
+        active: false,
+        source: 'none',
+        pinching: false,
+        triggerPressed: false,
+        worldSpeed: 0,
+      };
+    }
+
+    let worldSpeed = 0;
+    if (this.hasPrevVRBatPos) {
+      worldSpeed = outPos.distanceTo(this._prevVRBatPos) / dtSec;
+    }
+    this._prevVRBatPos.copy(outPos);
+    this.hasPrevVRBatPos = true;
+
+    return {
+      active: true,
+      source,
+      pinching,
+      triggerPressed,
+      worldSpeed,
+    };
+  }
+
+  /**
    * Aligns the active studio station (wheel, kiln, or gallery pedestal) and the
    * spatial VR panel comfortably in front of the Meta Quest headset.
    */
@@ -302,11 +472,11 @@ export class XRManager {
       );
       kilnGroup.rotation.y = yaw;
     } else if (screen === 'gallery' && galleryGroup) {
-      // Place gallery pedestal comfortably in front-right for close hand inspection
+      // Center-right showcase arc within comfortable Quest hand/controller reach without hitting left panel
       galleryGroup.position.set(
-        headPos.x + forward.x * 0.72 + right.x * 0.22,
+        headPos.x + forward.x * 0.88 + right.x * 0.16,
         yOffset,
-        headPos.z + forward.z * 0.72 + right.z * 0.22
+        headPos.z + forward.z * 0.88 + right.z * 0.16
       );
       galleryGroup.rotation.y = yaw;
     } else {
@@ -331,8 +501,9 @@ export class XRManager {
         screen === 'welcome' ||
         screen === 'start-studio' ||
         screen === 'settings';
-      const panelDist = isMenuScreen ? 0.72 : 0.62;
-      const panelSide = isMenuScreen ? -0.18 : -0.44;
+      const isGallery = screen === 'gallery';
+      const panelDist = isMenuScreen ? 0.72 : isGallery ? 0.72 : 0.62;
+      const panelSide = isMenuScreen ? -0.18 : isGallery ? -0.58 : -0.44;
       const panelY =
         headPos.y > 0.35
           ? THREE.MathUtils.clamp(headPos.y - 0.08, 0.85, 1.55)

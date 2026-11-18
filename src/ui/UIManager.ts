@@ -1,3 +1,4 @@
+import type { SmashScope } from '../gallery/PotterySmashSystem.ts';
 import { GLAZE_CATALOG } from '../kiln/GlazeManager.ts';
 import type { KilnStatus } from '../kiln/KilnController.ts';
 import {
@@ -66,6 +67,9 @@ export interface UIActions {
   onSelectGalleryItem: (id: string) => void;
   onRenameGalleryItem: (id: string, name: string) => void;
   onDeleteGalleryItem: (id: string) => void;
+  onToggleGallerySmash: () => void;
+  onSmashAllGallery: () => void;
+  onRestoreGallery: () => void;
   onExportGLB: (id?: string) => void;
   onUpdateSettings: (partial: Partial<StudioSettings>) => void;
   onMouseToolChange: (tool: MouseToolMode) => void;
@@ -118,6 +122,15 @@ export interface StudioHUDState {
   inVR: boolean;
   vrMessage: string;
   handCursorActive: boolean;
+  showHandCursorControl: boolean;
+  gallerySmashMode: boolean;
+  gallerySmashScope: SmashScope;
+  galleryCrackedCount: number;
+  gallerySmashedCount: number;
+  galleryTotalVessels: number;
+  galleryIsRestoring: boolean;
+  galleryFocusedName: string | null;
+  galleryFocusedHits: number;
   tutorialMatched: boolean;
   tutorialProgress: number;
   tutorialFinishedAll: boolean;
@@ -494,9 +507,13 @@ export class UIManager {
         <div class="welcome-actions">
           <div class="welcome-primary-row">
             <button class="btn btn-primary btn-welcome-main" id="btn-enter-studio">Enter Studio</button>
-            <button class="btn ${hud.handCursorActive ? 'btn-hand-active' : 'btn-secondary'} btn-welcome-main" id="btn-welcome-hand-cursor">
-              ${hud.handCursorActive ? 'Hand Cursor: ON' : 'Hand Cursor'}
-            </button>
+            ${
+              hud.showHandCursorControl
+                ? `<button class="btn ${hud.handCursorActive ? 'btn-hand-active' : 'btn-secondary'} btn-welcome-main" id="btn-welcome-hand-cursor">
+                     ${hud.handCursorActive ? 'Hand Cursor: ON' : 'Hand Cursor'}
+                   </button>`
+                : ''
+            }
             ${
               hud.vrSupported
                 ? '<button class="btn btn-vr btn-welcome-main" id="btn-welcome-vr">Enter Meta Quest VR</button>'
@@ -510,7 +527,7 @@ export class UIManager {
           </div>
         </div>
         <div class="control-hint-line">
-          <span>Quest Hand Tracking · Local MediaPipe Hands · Pinch UI Cursor · Mouse Fallback${hud.vrSupported ? ' · WebXR Ready' : ''}</span>
+          <span>Quest Hand Tracking · Local MediaPipe Hands${hud.showHandCursorControl ? ' · Pinch UI Cursor' : ''} · Mouse Fallback${hud.vrSupported ? ' · WebXR Ready' : ''}</span>
         </div>
       </div>
     `;
@@ -579,9 +596,13 @@ export class UIManager {
             <h2>Pottery Studio</h2>
           </div>
           <div class="cta-row">
-            <button class="btn btn-small ${hud.handCursorActive ? 'btn-hand-active' : 'btn-secondary'}" id="btn-hud-hand-cursor">
-              ${hud.handCursorActive ? 'Hand Cursor: ON' : 'Hand Cursor'}
-            </button>
+            ${
+              hud.showHandCursorControl
+                ? `<button class="btn btn-small ${hud.handCursorActive ? 'btn-hand-active' : 'btn-secondary'}" id="btn-hud-hand-cursor">
+                     ${hud.handCursorActive ? 'Hand Cursor: ON' : 'Hand Cursor'}
+                   </button>`
+                : ''
+            }
             <button class="btn btn-small btn-ghost" id="btn-back-welcome">Back</button>
           </div>
         </div>
@@ -909,7 +930,8 @@ export class UIManager {
                 : ''
             }
             ${
-              hud.handCursorActive || hud.inputMode === 'webcam'
+              hud.showHandCursorControl &&
+              (hud.handCursorActive || hud.inputMode === 'webcam')
                 ? `<button class="btn btn-small ${hud.handCursorActive ? 'btn-hand-active' : 'btn-secondary'}" id="btn-hud-hand-cursor">${hud.handCursorActive ? 'Hand Cursor: ON' : 'Hand Cursor'}</button>`
                 : ''
             }
@@ -1332,9 +1354,13 @@ export class UIManager {
                 ? `<button class="btn btn-small btn-vr" id="hud-vr-btn">${hud.inVR ? 'Exit VR' : 'Enter VR'}</button>`
                 : ''
             }
-            <button class="btn btn-small ${hud.handCursorActive ? 'btn-hand-active' : 'btn-secondary'}" id="btn-hud-hand-cursor">
-              ${hud.handCursorActive ? 'Hand Cursor: ON' : 'Hand Cursor'}
-            </button>
+            ${
+              hud.showHandCursorControl
+                ? `<button class="btn btn-small ${hud.handCursorActive ? 'btn-hand-active' : 'btn-secondary'}" id="btn-hud-hand-cursor">
+                     ${hud.handCursorActive ? 'Hand Cursor: ON' : 'Hand Cursor'}
+                   </button>`
+                : ''
+            }
             <button class="btn btn-small btn-ghost" id="btn-tut-close">Back</button>
           </div>
         </div>
@@ -1446,9 +1472,13 @@ export class UIManager {
                 ? `<button class="btn btn-small btn-vr" id="hud-vr-btn">${hud.inVR ? 'Exit VR' : 'Enter VR'}</button>`
                 : ''
             }
-            <button class="btn btn-small ${hud.handCursorActive ? 'btn-hand-active' : 'btn-secondary'}" id="btn-hud-hand-cursor">
-              ${hud.handCursorActive ? 'Hand Cursor: ON' : 'Hand Cursor'}
-            </button>
+            ${
+              hud.showHandCursorControl
+                ? `<button class="btn btn-small ${hud.handCursorActive ? 'btn-hand-active' : 'btn-secondary'}" id="btn-hud-hand-cursor">
+                     ${hud.handCursorActive ? 'Hand Cursor: ON' : 'Hand Cursor'}
+                   </button>`
+                : ''
+            }
             <button class="btn btn-small btn-secondary" id="btn-glaze-back">Back to Wheel</button>
           </div>
         </div>
@@ -1563,7 +1593,7 @@ export class UIManager {
                 : ''
             }
             ${
-              hud.handCursorActive
+              hud.showHandCursorControl && hud.handCursorActive
                 ? `<button class="btn btn-small btn-hand-active" id="btn-hud-hand-cursor">Hand Cursor: ON</button>`
                 : ''
             }
@@ -1633,20 +1663,51 @@ export class UIManager {
     hud: StudioHUDState
   ): void {
     const selected = items.find((i) => i.id === selectedId) ?? items[0] ?? null;
+    const smashMode = hud.gallerySmashMode;
+    const smashScope = hud.gallerySmashScope;
+    const crackedCount = hud.galleryCrackedCount;
+    const smashedCount = hud.gallerySmashedCount;
+    const totalVessels = Math.max(1, hud.galleryTotalVessels || items.length);
+    const isRestoring = hud.galleryIsRestoring;
+    const intactCount = Math.max(0, totalVessels - smashedCount);
+    const hasDamage = smashedCount > 0 || crackedCount > 0;
+    const smashAllDisabled =
+      isRestoring ||
+      (smashMode && smashScope === 'all' && intactCount === 0);
+
+    let subtitleText = 'Your fired vessels will be preserved here.';
+    if (isRestoring) {
+      subtitleText =
+        'Time Stone active — reversing time to restore cracked & shattered pottery!';
+    } else if (smashMode) {
+      const targetSummary = hud.galleryFocusedName
+        ? hud.galleryFocusedHits >= 1
+          ? `Target: ${hud.galleryFocusedName} (Cracked 1/2 — hit once more to shatter!)`
+          : `Target: ${hud.galleryFocusedName} (Intact 0/2 — Hit 1 cracks, Hit 2 shatters)`
+        : smashedCount > 0 && intactCount === 0
+          ? 'Shattered! Press Restore to rewind time, or Exit to delete.'
+          : 'Move hand, bat, or pointer onto any pot to focus.';
+      const countsSummary = `${crackedCount} cracked · ${smashedCount}/${totalVessels} shattered`;
+      subtitleText =
+        smashedCount > 0
+          ? `${targetSummary} · ${countsSummary} · Restore to keep, or Exit to delete!`
+          : hasDamage
+            ? `${targetSummary} · ${countsSummary} · Press Restore to rewind time!`
+            : smashScope === 'single'
+              ? `${targetSummary} · Showing only selected pottery · Swipe, punch, or click!`
+              : `${targetSummary} · Showing all ${totalVessels} vessels · Swipe or hit Smash All!`;
+    } else if (selected) {
+      subtitleText = `${GLAZE_CATALOG.find((g) => g.id === selected.glazeId)?.name ?? selected.glazeId} · ${selected.measurements.heightCm} cm × ${selected.measurements.maxWidthCm} cm · Drag scene to inspect`;
+    }
+
     const el = document.createElement('div');
     el.className = 'studio-hud';
     el.innerHTML = `
       <div class="hud-top-row">
-        <div class="hud-corner-card">
-          <p class="eyebrow">VILLAGE COLLECTION (${items.length})</p>
-          <h2 class="compact-title">${selected ? selected.name : 'Pottery Gallery'}</h2>
-          <p class="gesture-desc">
-            ${
-              selected
-                ? `${GLAZE_CATALOG.find((g) => g.id === selected.glazeId)?.name ?? selected.glazeId} · ${selected.measurements.heightCm} cm × ${selected.measurements.maxWidthCm} cm · Drag scene to inspect`
-                : 'Your fired vessels will be preserved here.'
-            }
-          </p>
+        <div class="hud-corner-card ${isRestoring ? 'hud-card-timestorm' : ''}">
+          <p class="eyebrow">${isRestoring ? 'TIME REVERSAL' : smashMode ? (smashScope === 'single' ? 'SMASH BAT · SELECTED POTTERY' : 'SMASH ALL · 2 HITS TO BREAK') : `VILLAGE COLLECTION (${items.length})`}</p>
+          <h2 class="compact-title">${smashMode ? (hud.galleryFocusedName ? `Focus: ${hud.galleryFocusedName} (${hud.galleryFocusedHits}/2)` : smashScope === 'all' && totalVessels > 1 ? `All ${totalVessels} Vessels Spaced Safely` : selected?.name ?? 'Pottery Gallery') : selected ? selected.name : 'Pottery Gallery'}</h2>
+          <p class="gesture-desc">${subtitleText}</p>
         </div>
         <div class="hud-top-right">
           <div class="hud-quick-actions">
@@ -1655,9 +1716,13 @@ export class UIManager {
                 ? `<button class="btn btn-small btn-vr" id="hud-vr-btn">${hud.inVR ? 'Exit VR' : 'Enter VR'}</button>`
                 : ''
             }
-            <button class="btn btn-small ${hud.handCursorActive ? 'btn-hand-active' : 'btn-secondary'}" id="btn-hud-hand-cursor">
-              ${hud.handCursorActive ? 'Hand Cursor: ON' : 'Hand Cursor'}
-            </button>
+            ${
+              hud.showHandCursorControl
+                ? `<button class="btn btn-small ${hud.handCursorActive ? 'btn-hand-active' : 'btn-secondary'}" id="btn-hud-hand-cursor">
+                     ${hud.handCursorActive ? 'Hand Cursor: ON' : 'Hand Cursor'}
+                   </button>`
+                : ''
+            }
             <button class="btn btn-small btn-primary" id="btn-gal-new">Create Pottery</button>
             <button class="btn btn-small btn-ghost" id="btn-gal-home">Home</button>
           </div>
@@ -1691,10 +1756,23 @@ export class UIManager {
                  ${
                    selected
                      ? `<div class="gallery-item-actions">
-                          <input id="gal-rename-input" class="text-input" type="text" maxlength="40" value="${selected.name}" />
-                          <button class="btn btn-small btn-secondary" id="btn-gal-rename">Rename</button>
-                          <button class="btn btn-small btn-secondary" id="btn-gal-glb">Export GLB</button>
-                          <button class="btn btn-small btn-danger" id="btn-gal-del">Delete</button>
+                          <input id="gal-rename-input" class="text-input" type="text" maxlength="40" value="${selected.name}" ${smashMode ? 'disabled' : ''} />
+                          <button class="btn btn-small btn-secondary" id="btn-gal-rename" ${smashMode ? 'disabled' : ''}>Rename</button>
+                          <button class="btn btn-small btn-secondary" id="btn-gal-glb" ${smashMode ? 'disabled' : ''}>Export GLB</button>
+                          <button class="btn btn-small ${smashMode ? 'btn-smash-active' : 'btn-smash'}" id="btn-gal-smash" ${isRestoring ? 'disabled' : ''}>
+                            ${smashMode ? (smashedCount > 0 ? `Exit (Delete ${smashedCount})` : 'Exit Bat') : 'Smash (Bat)'}
+                          </button>
+                          <button class="btn btn-small btn-smash" id="btn-gal-smash-all" ${smashAllDisabled ? 'disabled' : ''}>
+                            Smash All (${items.length})
+                          </button>
+                          ${
+                            hasDamage || isRestoring
+                              ? `<button class="btn btn-small btn-timestorm" id="btn-gal-restore" ${isRestoring ? 'disabled' : ''}>
+                                   ${isRestoring ? 'Reversing Time…' : 'Restore (Time)'}
+                                 </button>`
+                              : ''
+                          }
+                          <button class="btn btn-small btn-danger" id="btn-gal-del" ${isRestoring ? 'disabled' : ''}>Delete</button>
                         </div>`
                      : ''
                  }`
@@ -1723,6 +1801,18 @@ export class UIManager {
 
     el.querySelector('#btn-gal-glb')?.addEventListener('click', () => {
       if (selected) this.actions.onExportGLB(selected.id);
+    });
+
+    el.querySelector('#btn-gal-smash')?.addEventListener('click', () => {
+      this.actions.onToggleGallerySmash();
+    });
+
+    el.querySelector('#btn-gal-smash-all')?.addEventListener('click', () => {
+      this.actions.onSmashAllGallery();
+    });
+
+    el.querySelector('#btn-gal-restore')?.addEventListener('click', () => {
+      this.actions.onRestoreGallery();
     });
 
     el.querySelector('#btn-gal-del')?.addEventListener('click', () => {
@@ -1762,9 +1852,13 @@ export class UIManager {
                 ? `<button class="btn btn-small btn-vr" id="hud-vr-btn">${hud.inVR ? 'Exit VR' : 'Enter VR'}</button>`
                 : ''
             }
-            <button class="btn btn-small ${hud.handCursorActive ? 'btn-hand-active' : 'btn-secondary'}" id="btn-hud-hand-cursor">
-              ${hud.handCursorActive ? 'Hand Cursor: ON' : 'Hand Cursor'}
-            </button>
+            ${
+              hud.showHandCursorControl
+                ? `<button class="btn btn-small ${hud.handCursorActive ? 'btn-hand-active' : 'btn-secondary'}" id="btn-hud-hand-cursor">
+                     ${hud.handCursorActive ? 'Hand Cursor: ON' : 'Hand Cursor'}
+                   </button>`
+                : ''
+            }
             <button class="btn btn-primary" id="btn-set-close">Done</button>
           </div>
         </div>
