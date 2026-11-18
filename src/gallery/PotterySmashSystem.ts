@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import type { ClayNameGeometry } from '../names/ClayNameGeometry.ts';
 import type { ClayGeometry } from '../pottery/ClayGeometry.ts';
 import type { SavedPotteryItem } from '../types.ts';
 
@@ -47,7 +48,8 @@ export interface SmashableVesselEntry {
   item: SavedPotteryItem;
   root: THREE.Group;
   mesh: THREE.Mesh;
-  clayGeometry: ClayGeometry;
+  clayGeometry: ClayGeometry | null;
+  nameGeometry?: ClayNameGeometry | null;
   customMaterial: THREE.Material | null;
   customTexture: THREE.Texture | null;
   shardMaterial: THREE.Material;
@@ -454,6 +456,189 @@ export function buildShardGeometriesFromClay(
       } else {
         radialDir.normalize();
       }
+
+      shards.push({
+        geometry: geo,
+        centroid,
+        radialDir,
+        approxRadius: Math.max(0.012, Math.sqrt(maxDistSq)),
+      });
+    }
+  }
+
+  return shards;
+}
+
+/**
+ * Slices a procedural ClayNameGeometry plaque into thick, double-sided ceramic
+ * shard BufferGeometries preserving front & back clay/glaze UVs.
+ */
+export function buildShardGeometriesFromName(
+  nameGeometry: ClayNameGeometry,
+  bandsY = 3,
+  colsX = 6,
+  yOffset = 0.145
+): ShardSpec[] {
+  const C = nameGeometry.cols;
+  const R = nameGeometry.rows;
+  const faceCount = C * R;
+
+  const posAttr = nameGeometry.geometry.attributes.position;
+  const uvAttr = nameGeometry.geometry.attributes.uv;
+  if (!posAttr || !uvAttr) return [];
+
+  const positions = posAttr.array as Float32Array;
+  const uvs = uvAttr.array as Float32Array;
+  const shards: ShardSpec[] = [];
+
+  const rBounds: number[] = [0];
+  for (let b = 1; b < bandsY; b++) {
+    const jitter = ((b * 5) % 3) - 1;
+    const nominal = Math.round((b / bandsY) * (R - 1)) + jitter;
+    rBounds.push(Math.max(rBounds[b - 1] + 2, Math.min(R - 2, nominal)));
+  }
+  rBounds.push(R - 1);
+
+  for (let b = 0; b < bandsY; b++) {
+    const r0 = rBounds[b];
+    const r1 = rBounds[b + 1];
+
+    const cBounds: number[] = [0];
+    for (let k = 1; k < colsX; k++) {
+      const jitter = ((b * 7 + k * 3) % 5) - 2;
+      const seg = Math.round((k / colsX) * (C - 1)) + jitter;
+      cBounds.push(Math.max(cBounds[k - 1] + 2, Math.min(C - 2, seg)));
+    }
+    cBounds.push(C - 1);
+
+    for (let k = 0; k < colsX; k++) {
+      const c0 = cBounds[k];
+      const c1 = cBounds[k + 1];
+
+      const shardPos: number[] = [];
+      const shardUv: number[] = [];
+      const shardIndices: number[] = [];
+
+      let sumX = 0;
+      let sumY = 0;
+      let sumZ = 0;
+      let vCount = 0;
+
+      const pushVert = (srcIdx: number): number => {
+        const x = positions[srcIdx * 3];
+        const y = positions[srcIdx * 3 + 1] + yOffset;
+        const z = positions[srcIdx * 3 + 2];
+        const u = uvs[srcIdx * 2];
+        const v = uvs[srcIdx * 2 + 1];
+
+        shardPos.push(x, y, z);
+        shardUv.push(u, v);
+        sumX += x;
+        sumY += y;
+        sumZ += z;
+        return vCount++;
+      };
+
+      const rCount = r1 - r0 + 1;
+      const cCount = c1 - c0 + 1;
+      const frontGrid: number[][] = [];
+      const backGrid: number[][] = [];
+
+      for (let ri = 0; ri < rCount; ri++) {
+        const row = r0 + ri;
+        const fRow: number[] = [];
+        const bRow: number[] = [];
+        for (let ci = 0; ci < cCount; ci++) {
+          const col = c0 + ci;
+          const frontIdx = row * C + col;
+          fRow.push(pushVert(frontIdx));
+          bRow.push(pushVert(faceCount + frontIdx));
+        }
+        frontGrid.push(fRow);
+        backGrid.push(bRow);
+      }
+
+      for (let ri = 0; ri < rCount - 1; ri++) {
+        for (let ci = 0; ci < cCount - 1; ci++) {
+          const fa = frontGrid[ri][ci];
+          const fb = frontGrid[ri][ci + 1];
+          const fc = frontGrid[ri + 1][ci + 1];
+          const fd = frontGrid[ri + 1][ci];
+          shardIndices.push(fa, fb, fc, fa, fc, fd);
+
+          const ba = backGrid[ri][ci];
+          const bb = backGrid[ri][ci + 1];
+          const bc = backGrid[ri + 1][ci + 1];
+          const bd = backGrid[ri + 1][ci];
+          shardIndices.push(ba, bc, bb, ba, bd, bc);
+        }
+      }
+
+      // Stitch fractured thickness borders around all 4 edges
+      for (let ci = 0; ci < cCount - 1; ci++) {
+        // Bottom
+        const fa = frontGrid[0][ci];
+        const fb = frontGrid[0][ci + 1];
+        const ba = backGrid[0][ci];
+        const bb = backGrid[0][ci + 1];
+        shardIndices.push(fa, ba, fb, ba, bb, fb);
+
+        // Top
+        const tfa = frontGrid[rCount - 1][ci];
+        const tfb = frontGrid[rCount - 1][ci + 1];
+        const tba = backGrid[rCount - 1][ci];
+        const tbb = backGrid[rCount - 1][ci + 1];
+        shardIndices.push(tfa, tfb, tba, tba, tfb, tbb);
+      }
+
+      for (let ri = 0; ri < rCount - 1; ri++) {
+        // Left
+        const lfa = frontGrid[ri][0];
+        const lfb = frontGrid[ri + 1][0];
+        const lba = backGrid[ri][0];
+        const lbb = backGrid[ri + 1][0];
+        shardIndices.push(lfa, lfb, lba, lba, lfb, lbb);
+
+        // Right
+        const rfa = frontGrid[ri][cCount - 1];
+        const rfb = frontGrid[ri + 1][cCount - 1];
+        const rba = backGrid[ri][cCount - 1];
+        const rbb = backGrid[ri + 1][cCount - 1];
+        shardIndices.push(rfa, rba, rfb, rba, rbb, rfb);
+      }
+
+      if (vCount === 0) continue;
+
+      const centroid = new THREE.Vector3(
+        sumX / vCount,
+        sumY / vCount,
+        sumZ / vCount
+      );
+
+      let maxDistSq = 0;
+      for (let i = 0; i < vCount; i++) {
+        const lx = shardPos[i * 3] - centroid.x;
+        const ly = shardPos[i * 3 + 1] - centroid.y;
+        const lz = shardPos[i * 3 + 2] - centroid.z;
+        shardPos[i * 3] = lx;
+        shardPos[i * 3 + 1] = ly;
+        shardPos[i * 3 + 2] = lz;
+        const dSq = lx * lx + ly * ly + lz * lz;
+        if (dSq > maxDistSq) maxDistSq = dSq;
+      }
+
+      const geo = new THREE.BufferGeometry();
+      geo.setAttribute('position', new THREE.Float32BufferAttribute(shardPos, 3));
+      geo.setAttribute('uv', new THREE.Float32BufferAttribute(shardUv, 2));
+      geo.setIndex(shardIndices);
+      geo.computeVertexNormals();
+      geo.computeBoundingSphere();
+
+      const radialDir = new THREE.Vector3(
+        centroid.x * 1.4,
+        0.24 + (centroid.y - yOffset) * 1.2,
+        0.55 + Math.random() * 0.45
+      ).normalize();
 
       shards.push({
         geometry: geo,
@@ -1119,7 +1304,9 @@ export class PotterySmashSystem {
   private buildCrackLinesForImpact(
     vessel: SmashableVesselEntry,
     impactTheta: number,
-    impactHeightNorm: number
+    impactHeightNorm: number,
+    impactLocalX = 0,
+    impactLocalY = 0.145
   ): void {
     if (vessel.crackLineGeo) {
       vessel.crackLineGeo.dispose();
@@ -1131,6 +1318,75 @@ export class PotterySmashSystem {
     }
     vessel.crackGroup.clear();
 
+    if (vessel.nameGeometry) {
+      const C = vessel.nameGeometry.cols;
+      const R = vessel.nameGeometry.rows;
+      const posAttr = vessel.nameGeometry.geometry.attributes.position;
+      if (!posAttr || C < 4 || R < 4) return;
+      const pos = posAttr.array as Float32Array;
+      const yOffset = vessel.mesh.position.y;
+
+      const centerCol = Math.round(
+        THREE.MathUtils.clamp((impactLocalX / 0.52 + 0.5) * (C - 1), 6, C - 7)
+      );
+      const centerRow = Math.round(
+        THREE.MathUtils.clamp(((impactLocalY - yOffset) / 0.26 + 0.5) * (R - 1), 4, R - 5)
+      );
+
+      const mainVerts: number[] = [];
+      const hiVerts: number[] = [];
+
+      const samplePlaque = (cFloat: number, rFloat: number, zOff: number): [number, number, number] => {
+        const cc = Math.round(THREE.MathUtils.clamp(cFloat, 0, C - 1));
+        const rr = Math.round(THREE.MathUtils.clamp(rFloat, 0, R - 1));
+        const idx = (rr * C + cc) * 3;
+        return [pos[idx], pos[idx + 1] + yOffset, pos[idx + 2] + zOff];
+      };
+
+      const addPlaqueCrack = (dc: number, dr: number, steps: number, seed: number) => {
+        let curC = centerCol;
+        let curR = centerRow;
+        for (let s = 0; s < steps; s++) {
+          const zig = Math.sin((s + 1) * 2.1 + seed * 3.1) * 1.4;
+          const nextC = THREE.MathUtils.clamp(curC + dc + zig, 1, C - 2);
+          const nextR = THREE.MathUtils.clamp(curR + dr - zig * 0.4, 1, R - 2);
+          const [x0, y0, z0] = samplePlaque(curC, curR, 0.0028);
+          const [x1, y1, z1] = samplePlaque(nextC, nextR, 0.0028);
+          mainVerts.push(x0, y0, z0, x1, y1, z1);
+
+          const [hx0, hy0, hz0] = samplePlaque(curC + 0.8, curR + 0.4, 0.0034);
+          const [hx1, hy1, hz1] = samplePlaque(nextC + 0.8, nextR + 0.4, 0.0034);
+          hiVerts.push(hx0, hy0, hz0, hx1, hy1, hz1);
+
+          curC = nextC;
+          curR = nextR;
+        }
+      };
+
+      const branches: Array<[number, number, number]> = [
+        [7.5, 2.8, 7],
+        [-7.5, 2.2, 7],
+        [4.5, -4.2, 6],
+        [-5.2, -3.6, 6],
+        [1.2, 5.2, 5],
+        [-1.8, -5.0, 5],
+      ];
+      branches.forEach(([dc, dr, steps], idx) => addPlaqueCrack(dc, dr, steps, idx + 1));
+
+      const mainGeo = new THREE.BufferGeometry();
+      mainGeo.setAttribute('position', new THREE.Float32BufferAttribute(mainVerts, 3));
+      const hiGeo = new THREE.BufferGeometry();
+      hiGeo.setAttribute('position', new THREE.Float32BufferAttribute(hiVerts, 3));
+      vessel.crackLineGeo = mainGeo;
+      vessel.crackHighlightGeo = hiGeo;
+      vessel.crackGroup.add(
+        new THREE.LineSegments(mainGeo, vessel.crackMaterial),
+        new THREE.LineSegments(hiGeo, vessel.crackHighlightMat)
+      );
+      return;
+    }
+
+    if (!vessel.clayGeometry) return;
     const R = vessel.clayGeometry.ringCount;
     const outer = vessel.item.profile.outerRadii;
     const heights = vessel.item.profile.heights;
@@ -1253,7 +1509,8 @@ export class PotterySmashSystem {
     selectedId: string | null,
     buildMeshFn: (item: SavedPotteryItem) => {
       mesh: THREE.Mesh;
-      clayGeometry: ClayGeometry;
+      clayGeometry: ClayGeometry | null;
+      nameGeometry?: ClayNameGeometry | null;
       customMaterial: THREE.Material | null;
       customTexture: THREE.Texture | null;
     },
@@ -1281,7 +1538,9 @@ export class PotterySmashSystem {
       items.findIndex((it) => it.id === selectedId)
     );
     const vesselRadii = items.map((it) =>
-      Math.max(0.075, (it.measurements.maxWidthCm / 100) * 0.55)
+      it.kind === 'name'
+        ? 0.28
+        : Math.max(0.075, (it.measurements.maxWidthCm / 100) * 0.55)
     );
     const layouts = computeGalleryLayoutPositions(
       items.length,
@@ -1348,11 +1607,20 @@ export class PotterySmashSystem {
       const shardMat = (built.mesh.material as THREE.MeshPhysicalMaterial).clone();
       shardMat.side = THREE.DoubleSide;
 
-      const specs = buildShardGeometriesFromClay(
-        built.clayGeometry,
-        bandsY,
-        sectorsTheta
-      );
+      const specs = built.nameGeometry
+        ? buildShardGeometriesFromName(
+            built.nameGeometry,
+            3,
+            items.length <= 2 ? 6 : 5,
+            built.mesh.position.y
+          )
+        : built.clayGeometry
+          ? buildShardGeometriesFromClay(
+              built.clayGeometry,
+              bandsY,
+              sectorsTheta
+            )
+          : [];
       const shards: ActiveShard[] = specs.map((spec, sIdx) => {
         const sMesh = new THREE.Mesh(spec.geometry, shardMat);
         sMesh.visible = false;
@@ -1376,14 +1644,13 @@ export class PotterySmashSystem {
         };
       });
 
-      const vesselHeight = Math.max(
-        0.1,
-        item.measurements.heightCm / 100
-      );
-      const vesselRadius = Math.max(
-        0.07,
-        (item.measurements.maxWidthCm / 100) * 0.55
-      );
+      const isName = item.kind === 'name' && Boolean(built.nameGeometry);
+      const vesselHeight = isName
+        ? 0.28
+        : Math.max(0.1, item.measurements.heightCm / 100);
+      const vesselRadius = isName
+        ? 0.27
+        : Math.max(0.07, (item.measurements.maxWidthCm / 100) * 0.55);
       const centerLocal = new THREE.Vector3(
         layout.x,
         layout.y + vesselHeight * 0.5 * layout.scale,
@@ -1396,6 +1663,7 @@ export class PotterySmashSystem {
         root: vesselRoot,
         mesh: built.mesh,
         clayGeometry: built.clayGeometry,
+        nameGeometry: built.nameGeometry ?? null,
         customMaterial: built.customMaterial,
         customTexture: built.customTexture,
         shardMaterial: shardMat,
@@ -2038,7 +2306,7 @@ export class PotterySmashSystem {
     const vesselH = Math.max(0.08, vessel.item.measurements.heightCm / 100);
     const heightNorm = THREE.MathUtils.clamp(localY / vesselH, 0.2, 0.85);
 
-    this.buildCrackLinesForImpact(vessel, impactTheta, heightNorm);
+    this.buildCrackLinesForImpact(vessel, impactTheta, heightNorm, localX, localY);
     vessel.crackGroup.visible = true;
 
     // Sharp physical impact wobble impulse away from bat strike direction
@@ -2376,7 +2644,8 @@ export class PotterySmashSystem {
       if (v.plinthGroup) {
         this.group.remove(v.plinthGroup);
       }
-      v.clayGeometry.dispose();
+      v.clayGeometry?.dispose();
+      v.nameGeometry?.dispose();
       v.customTexture?.dispose();
       v.customMaterial?.dispose();
       v.shardMaterial.dispose();

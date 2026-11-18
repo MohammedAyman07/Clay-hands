@@ -1,5 +1,11 @@
 import * as THREE from 'three';
 import { GlazeManager } from '../kiln/GlazeManager.ts';
+import {
+  ClayNameGeometry,
+  createInitialClayNameState,
+  NAME_DEFAULT_COLS,
+  NAME_DEFAULT_ROWS,
+} from '../names/ClayNameGeometry.ts';
 import { ClayGeometry } from '../pottery/ClayGeometry.ts';
 import {
   createInitialClayProfile,
@@ -14,6 +20,7 @@ export class GalleryManager {
 
   private readonly glazeManager: GlazeManager;
   private activeGeometry: ClayGeometry | null = null;
+  private activeNameGeometry: ClayNameGeometry | null = null;
   private activeMesh: THREE.Mesh | null = null;
   private activeCustomMaterial: THREE.Material | null = null;
   private activeCustomTexture: THREE.Texture | null = null;
@@ -69,25 +76,56 @@ export class GalleryManager {
 
   public buildMeshFromSaved(item: SavedPotteryItem): {
     mesh: THREE.Mesh;
-    clayGeometry: ClayGeometry;
+    clayGeometry: ClayGeometry | null;
+    nameGeometry: ClayNameGeometry | null;
     customMaterial: THREE.Material | null;
     customTexture: THREE.Texture | null;
   } {
-    const ringCount = item.profile.outerRadii.length;
-    const clayGeometry = new ClayGeometry(ringCount, DEFAULT_ANGULAR_SEGMENTS);
-    const profile = createInitialClayProfile(ringCount, DEFAULT_ANGULAR_SEGMENTS);
-    profile.outerRadii = [...item.profile.outerRadii];
-    profile.innerRadii = [...item.profile.innerRadii];
-    profile.heights = [...item.profile.heights];
-    profile.openDepth = item.profile.openDepth;
-    profile.wobble = 0;
-    if (
-      item.profile.angularOffsets &&
-      item.profile.angularOffsets.length === profile.angularOffsets.length
-    ) {
-      profile.angularOffsets = [...item.profile.angularOffsets];
+    let clayGeometry: ClayGeometry | null = null;
+    let nameGeometry: ClayNameGeometry | null = null;
+    let bufferGeo: THREE.BufferGeometry;
+    const isName = item.kind === 'name' && Boolean(item.nameData);
+
+    if (isName && item.nameData) {
+      const nd = item.nameData;
+      const cols = nd.cols ?? NAME_DEFAULT_COLS;
+      const rows = nd.rows ?? NAME_DEFAULT_ROWS;
+      nameGeometry = new ClayNameGeometry(cols, rows);
+      const state = createInitialClayNameState(
+        nd.text,
+        nd.plaqueShape,
+        cols,
+        rows
+      );
+      state.letterRelief = nd.letterRelief;
+      state.letterBoldness = nd.letterBoldness;
+      for (
+        let i = 0;
+        i < Math.min(state.sculptDeltas.length, nd.sculptDeltas.length);
+        i++
+      ) {
+        state.sculptDeltas[i] = nd.sculptDeltas[i];
+      }
+      nameGeometry.updateFromState(state);
+      bufferGeo = nameGeometry.geometry;
+    } else {
+      const ringCount = item.profile.outerRadii.length;
+      clayGeometry = new ClayGeometry(ringCount, DEFAULT_ANGULAR_SEGMENTS);
+      const profile = createInitialClayProfile(ringCount, DEFAULT_ANGULAR_SEGMENTS);
+      profile.outerRadii = [...item.profile.outerRadii];
+      profile.innerRadii = [...item.profile.innerRadii];
+      profile.heights = [...item.profile.heights];
+      profile.openDepth = item.profile.openDepth;
+      profile.wobble = 0;
+      if (
+        item.profile.angularOffsets &&
+        item.profile.angularOffsets.length === profile.angularOffsets.length
+      ) {
+        profile.angularOffsets = [...item.profile.angularOffsets];
+      }
+      clayGeometry.updateFromProfile(profile, 0);
+      bufferGeo = clayGeometry.geometry;
     }
-    clayGeometry.updateFromProfile(profile, 0);
 
     const baseMat = this.glazeManager.getMaterial(item.glazeId);
     let mat: THREE.Material = baseMat;
@@ -106,7 +144,7 @@ export class GalleryManager {
       }
       const tex = new THREE.CanvasTexture(canvas);
       tex.colorSpace = THREE.SRGBColorSpace;
-      tex.wrapS = THREE.RepeatWrapping;
+      tex.wrapS = isName ? THREE.ClampToEdgeWrapping : THREE.RepeatWrapping;
       tex.wrapT = THREE.ClampToEdgeWrapping;
 
       const paintedMat = new THREE.MeshPhysicalMaterial({
@@ -137,20 +175,24 @@ export class GalleryManager {
       customTexture = tex;
     }
 
-    const mesh = new THREE.Mesh(clayGeometry.geometry, mat);
+    const mesh = new THREE.Mesh(bufferGeo, mat);
     mesh.castShadow = true;
     mesh.receiveShadow = true;
     mesh.name = item.name;
-    return { mesh, clayGeometry, customMaterial, customTexture };
+    if (isName) {
+      mesh.position.y = 0.145;
+    }
+    return { mesh, clayGeometry, nameGeometry, customMaterial, customTexture };
   }
 
   public showItemOnPedestal(item: SavedPotteryItem | null): THREE.Mesh | null {
     this.clearPedestal();
     if (!item) return null;
 
-    const { mesh, clayGeometry, customMaterial, customTexture } =
+    const { mesh, clayGeometry, nameGeometry, customMaterial, customTexture } =
       this.buildMeshFromSaved(item);
     this.activeGeometry = clayGeometry;
+    this.activeNameGeometry = nameGeometry;
     this.activeMesh = mesh;
     this.activeCustomMaterial = customMaterial;
     this.activeCustomTexture = customTexture;
@@ -166,6 +208,10 @@ export class GalleryManager {
     if (this.activeGeometry) {
       this.activeGeometry.dispose();
       this.activeGeometry = null;
+    }
+    if (this.activeNameGeometry) {
+      this.activeNameGeometry.dispose();
+      this.activeNameGeometry = null;
     }
     if (this.activeCustomTexture) {
       this.activeCustomTexture.dispose();

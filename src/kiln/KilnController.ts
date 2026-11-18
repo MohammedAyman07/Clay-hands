@@ -45,6 +45,7 @@ export class KilnController {
   private duration = 6.2;
   private reducedMotion = false;
   private vesselMesh: THREE.Object3D | null = null;
+  private vesselYOffset = 0;
   private onTransformCallback: (() => void) | null = null;
   private onCompleteCallback: (() => void) | null = null;
   private transformed = false;
@@ -230,11 +231,13 @@ export class KilnController {
     vessel: THREE.Object3D,
     options: {
       reducedMotion: boolean;
+      yOffset?: number;
       onTransform: () => void;
       onComplete: () => void;
     }
   ): void {
     this.vesselMesh = vessel;
+    this.vesselYOffset = options.yOffset ?? 0;
     this.reducedMotion = options.reducedMotion;
     this.duration = options.reducedMotion ? 3.2 : 6.2;
     this.onTransformCallback = options.onTransform;
@@ -246,7 +249,7 @@ export class KilnController {
 
     // Start vessel on reveal pedestal in front of kiln
     this.revealPedestal.add(vessel);
-    vessel.position.set(0, 0, 0);
+    vessel.position.set(0, this.vesselYOffset, 0);
     vessel.rotation.set(0, 0, 0);
     this.doorPivot.rotation.y = 0;
   }
@@ -290,7 +293,8 @@ export class KilnController {
         this.hearthAnchor.position,
         eased
       );
-      caption = 'Placing vessel inside hearth…';
+      this.vesselMesh.position.y += this.vesselYOffset;
+      caption = 'Placing creation inside hearth…';
     } else if (t < 0.4) {
       // 3. Close door
       phase = 'closing-door';
@@ -339,6 +343,7 @@ export class KilnController {
         this.revealPedestal.position,
         eased
       );
+      this.vesselMesh.position.y += this.vesselYOffset;
       tempC = 60;
       caption = 'Fired and luminous!';
     } else {
@@ -347,7 +352,7 @@ export class KilnController {
       tempC = 30;
       this.running = false;
       this.revealPedestal.add(this.vesselMesh);
-      this.vesselMesh.position.set(0, 0, 0);
+      this.vesselMesh.position.set(0, this.vesselYOffset, 0);
       this.doorPivot.rotation.y = -1.6;
       caption = 'Firing complete!';
       this.onCompleteCallback?.();

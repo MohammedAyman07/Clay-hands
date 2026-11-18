@@ -755,3 +755,154 @@ test('PotterySmashSystem enforces non-overlapping distance, 2-hit crack -> shatt
   smashSys.dispose();
 });
 
+test('ClayNameGeometry & ClayNameSculptor support 3D embossed lettering, plaque shapes, hand sculpting, macro gestures, storage, and bat smash + restore', async () => {
+  const THREE = await import('three');
+  const {
+    ClayNameGeometry,
+    computeSignedDistanceField,
+    createInitialClayNameState,
+    generateLetterMask,
+  } = await import('../src/names/ClayNameGeometry.ts');
+  const { ClayNameSculptor } = await import('../src/names/ClayNameSculptor.ts');
+  const {
+    PotterySmashSystem,
+    buildShardGeometriesFromName,
+  } = await import('../src/gallery/PotterySmashSystem.ts');
+
+  // 1. Procedural bitmap font mask & signed distance field
+  const cols = 72;
+  const rows = 36;
+  const mask = generateLetterMask('CLAY', cols, rows);
+  assert.equal(mask.length, cols * rows);
+  let litCount = 0;
+  for (let i = 0; i < mask.length; i++) {
+    if (mask[i] > 0.5) litCount++;
+  }
+  assert.ok(litCount > 40, 'Expected embossed letter pixels for CLAY');
+  const sdf = computeSignedDistanceField(mask, cols, rows);
+  assert.equal(sdf.length, cols * rows);
+
+  // 2. Watertight double-sided BufferGeometry across all plaque shapes
+  const geo = new ClayNameGeometry(cols, rows);
+  for (const shape of ['tablet', 'oval', 'ribbon', 'heart'] as const) {
+    const st = createInitialClayNameState('STAR', shape, cols, rows);
+    geo.updateFromState(st);
+    const pos = geo.geometry.attributes.position;
+    const norm = geo.geometry.attributes.normal;
+    assert.equal(pos.count, cols * rows * 2);
+    assert.equal(norm.count, pos.count);
+    for (let i = 0; i < pos.count * 3; i++) {
+      assert.ok(Number.isFinite(pos.array[i]));
+      assert.ok(Number.isFinite(norm.array[i]));
+    }
+  }
+  geo.dispose();
+
+  // 3. ClayNameSculptor hand brush sculpting, heart stamp, macro gestures, undo, and serialization
+  const sculptor = new ClayNameSculptor();
+  sculptor.setNameText('ALICE');
+  assert.equal(sculptor.state.text, 'ALICE');
+
+  const centerIdx =
+    Math.floor(sculptor.state.rows / 2) * sculptor.state.cols +
+    Math.floor(sculptor.state.cols / 2);
+
+  sculptor.beginStroke();
+  const puffed = sculptor.applyBrushAtUV(0.5, 0.5, 'sculpt_puff', 1.0, 0.05);
+  sculptor.endStroke();
+  assert.equal(puffed, true);
+  assert.ok(sculptor.state.sculptDeltas[centerIdx] > 0);
+  assert.equal(sculptor.canUndo, true);
+
+  assert.equal(sculptor.undo(), true);
+  assert.ok(Math.abs(sculptor.state.sculptDeltas[centerIdx]) < 1e-6);
+
+  sculptor.beginStroke();
+  assert.equal(
+    sculptor.applyBrushAtUV(0.25, 0.5, 'stamp_heart', 1.0, 0.05),
+    true
+  );
+  sculptor.endStroke();
+
+  const baseBold = sculptor.state.letterBoldness;
+  assert.equal(sculptor.applyMacroGesture('widen', 0.9, 0.25), true);
+  assert.ok(sculptor.state.letterBoldness > baseBold);
+
+  const baseRelief = sculptor.state.letterRelief;
+  assert.equal(sculptor.applyMacroGesture('raise', 0.9, 0.25), true);
+  assert.ok(sculptor.state.letterRelief > baseRelief);
+
+  const exported = sculptor.exportSavedNameData();
+  assert.equal(exported.text, 'ALICE');
+
+  // 4. PotteryStorage persistence for kind === 'name'
+  const mem = new MemoryStorage();
+  const storage = new PotteryStorage(mem);
+  const profile = createInitialClayProfile();
+  const savedNameItem: SavedPotteryItem = {
+    id: 'name_test_1',
+    name: exported.text,
+    createdAt: '2026-11-18T00:00:00.000Z',
+    glazeId: 'cobalt-wash',
+    mode: 'free',
+    kind: 'name',
+    nameData: exported,
+    measurements: measureVessel(profile),
+    profile: {
+      outerRadii: [...profile.outerRadii],
+      innerRadii: [...profile.innerRadii],
+      heights: [...profile.heights],
+      openDepth: 0,
+    },
+  };
+  assert.equal(storage.saveItem(savedNameItem).ok, true);
+  const reloaded = storage.loadAll();
+  assert.equal(reloaded.ok, true);
+  assert.equal(reloaded.data?.length, 1);
+  assert.equal(reloaded.data?.[0].kind, 'name');
+  assert.equal(reloaded.data?.[0].nameData?.text, 'ALICE');
+
+  // 5. Nameplate shard slicing & Smash + Time-Stone Restore
+  const shards = buildShardGeometriesFromName(sculptor.clayGeometry, 3, 5);
+  assert.equal(shards.length, 15);
+  for (const s of shards) {
+    assert.ok(s.geometry.attributes.position.count > 12);
+    s.geometry.dispose();
+  }
+
+  const smash = new PotterySmashSystem();
+  smash.enterSmashMode(
+    [savedNameItem],
+    savedNameItem.id,
+    () => {
+      const mat = new THREE.MeshPhysicalMaterial({ color: 0xb85d41 });
+      const mesh = new THREE.Mesh(sculptor.clayGeometry.geometry, mat);
+      return {
+        mesh,
+        clayGeometry: null,
+        nameGeometry: null,
+        customMaterial: mat,
+        customTexture: null,
+      };
+    },
+    'single'
+  );
+  // Hit 1 -> crack; Hit 2 -> shatter
+  smash.triggerBatSwing(1, true);
+  assert.equal(smash.getCrackedCount(), 1);
+  assert.equal(smash.getSmashedCount(), 0);
+  smash.update(0.4);
+  smash.triggerBatSwing(-1, true);
+  assert.equal(smash.getSmashedCount(), 1);
+  assert.deepEqual(smash.getSmashedItemIds(), ['name_test_1']);
+
+  assert.equal(smash.startRestore(), true);
+  for (let i = 0; i < 90; i++) smash.update(0.03);
+  assert.equal(smash.getSmashedCount(), 0);
+  assert.deepEqual(smash.getSmashedItemIds(), []);
+
+  smash.dispose();
+  sculptor.dispose();
+});
+
+

@@ -5,6 +5,7 @@ import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 export type CameraPreset =
   | 'welcome'
   | 'studio'
+  | 'name-studio'
   | 'glaze'
   | 'kiln'
   | 'gallery';
@@ -20,6 +21,10 @@ const PRESET_TARGETS: Record<
   studio: {
     pos: new THREE.Vector3(0, 1.15, 0.9),
     target: new THREE.Vector3(0, 0.81, 0),
+  },
+  'name-studio': {
+    pos: new THREE.Vector3(0, 1.16, 0.86),
+    target: new THREE.Vector3(0, 0.90, 0.02),
   },
   glaze: {
     pos: new THREE.Vector3(0.22, 1.03, 0.8),

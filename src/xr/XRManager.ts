@@ -446,7 +446,8 @@ export class XRManager {
     wheelGroup: THREE.Object3D,
     kilnGroup: THREE.Object3D | null,
     galleryGroup: THREE.Object3D | null,
-    vrPanel: THREE.Object3D | null
+    vrPanel: THREE.Object3D | null,
+    nameStationGroup?: THREE.Object3D | null
   ): void {
     const headPos = new THREE.Vector3();
     const forward = new THREE.Vector3();
@@ -479,6 +480,19 @@ export class XRManager {
         headPos.z + forward.z * 0.88 + right.z * 0.16
       );
       galleryGroup.rotation.y = yaw;
+    } else if (screen === 'name-studio' && nameStationGroup) {
+      nameStationGroup.position.set(
+        headPos.x + forward.x * 0.54,
+        yOffset,
+        headPos.z + forward.z * 0.54
+      );
+      nameStationGroup.rotation.y = yaw;
+      wheelGroup.position.set(
+        headPos.x + forward.x * 0.54,
+        yOffset,
+        headPos.z + forward.z * 0.54
+      );
+      wheelGroup.rotation.y = yaw;
     } else {
       const wheelDist =
         screen === 'welcome' || screen === 'start-studio' || screen === 'settings'

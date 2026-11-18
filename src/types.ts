@@ -4,6 +4,7 @@ export type AppScreen =
   | 'webcam-permission'
   | 'hand-calibration'
   | 'studio'
+  | 'name-studio'
   | 'tutorial'
   | 'glaze'
   | 'kiln'
@@ -150,14 +151,35 @@ export interface BrushColorDefinition {
 
 export type BrushSizePreset = 'fine' | 'medium' | 'broad';
 
+export type ClayNameTool =
+  | 'sculpt_puff'
+  | 'sculpt_carve'
+  | 'sculpt_smooth'
+  | 'stamp_heart'
+  | 'paint';
+
+export type ClayNamePlaqueShape = 'tablet' | 'oval' | 'ribbon' | 'heart';
+
+export interface SavedClayNameData {
+  text: string;
+  plaqueShape: ClayNamePlaqueShape;
+  letterRelief: number;
+  letterBoldness: number;
+  cols: number;
+  rows: number;
+  sculptDeltas: number[];
+}
+
 export interface SavedPotteryItem {
   id: string;
   name: string;
   createdAt: string;
   glazeId: string;
   mode: GameMode;
+  kind?: 'vessel' | 'name';
   measurements: VesselMeasurements;
   paintDataUrl?: string;
+  nameData?: SavedClayNameData;
   profile: {
     outerRadii: number[];
     innerRadii: number[];

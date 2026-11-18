@@ -41,6 +41,20 @@ export function isValidSavedPotteryItem(raw: unknown): raw is SavedPotteryItem {
   ) {
     return false;
   }
+  if (item.kind === 'name') {
+    const nd = item.nameData;
+    if (
+      !nd ||
+      typeof nd !== 'object' ||
+      typeof nd.text !== 'string' ||
+      typeof nd.plaqueShape !== 'string' ||
+      typeof nd.letterRelief !== 'number' ||
+      typeof nd.letterBoldness !== 'number' ||
+      !Array.isArray(nd.sculptDeltas)
+    ) {
+      return false;
+    }
+  }
   const p = item.profile;
   return (
     Array.isArray(p.outerRadii) &&

@@ -7,6 +7,8 @@ import { VILLAGE_PIGMENTS } from '../pottery/VesselPainter.ts';
 import type {
   AppScreen,
   BrushSizePreset,
+  ClayNamePlaqueShape,
+  ClayNameTool,
   GameMode,
   GuidedLessonId,
   PotteryPersonality,
@@ -58,10 +60,20 @@ export interface VRStudioPanelActions {
   onCancelReset: () => void;
   onRecenterStation: () => void;
   onExitVR: () => void;
+  onOpenNameStudio: () => void;
+  onSetClayNameText: (text: string) => void;
+  onSetClayNameShape: (shape: ClayNamePlaqueShape) => void;
+  onSetClayNameTool: (tool: ClayNameTool) => void;
+  onSetClayNameRelief: (meters: number) => void;
+  onSetClayNameBoldness: (boldness: number) => void;
+  onUndoClayName: () => void;
+  onResetClayName: () => void;
+  onFinishClayName: (goToGlaze: boolean) => void;
 }
 
 export interface VRPanelSyncState {
   screen: AppScreen;
+  activeCreationKind: 'vessel' | 'name';
   mode: GameMode;
   lessonId: GuidedLessonId;
   challengeId: string;
@@ -108,6 +120,12 @@ export interface VRPanelSyncState {
   tutorialFinishedAll: boolean;
   completedTutorialIds: ReadonlySet<string>;
   settings: StudioSettings;
+  clayNameText: string;
+  clayNameShape: ClayNamePlaqueShape;
+  clayNameTool: ClayNameTool;
+  clayNameReliefMm: number;
+  clayNameBoldness: number;
+  canUndoClayName: boolean;
 }
 
 const KILN_NAME_PRESETS = [
@@ -190,7 +208,22 @@ export class VRStudioPanel extends THREE.Group {
   private readonly glazePaintBtn: xb.UIButton;
   private readonly glazeOrbitBtn: xb.UIButton;
   private readonly glazeSpinBtn: xb.UIButton;
+  private readonly glazeBackBtn: xb.UIButton;
   private readonly glazeSwatches = new Map<string, xb.UIButton>();
+
+  // Name Studio Controls
+  private readonly nameWordTitle: xb.UIText;
+  private readonly namePresetBtns = new Map<string, xb.UIButton>();
+  private readonly nameShapeBtns = new Map<ClayNamePlaqueShape, xb.UIButton>();
+  private readonly nameToolBtns = new Map<ClayNameTool, xb.UIButton>();
+  private readonly nameReliefSlider: xb.UISlider;
+  private readonly nameReliefVal: xb.UIText;
+  private readonly nameBoldSlider: xb.UISlider;
+  private readonly nameBoldVal: xb.UIText;
+  private readonly nameUndoBtn: xb.UIButton;
+  private lastNameReliefMm = -1;
+  private lastNameBoldness = -1;
+  private latestCreationKind: 'vessel' | 'name' = 'vessel';
 
   // Kiln Controls
   private readonly kilnCaptionText: xb.UIText;
@@ -199,6 +232,7 @@ export class VRStudioPanel extends THREE.Group {
   private readonly kilnDonePanel: xb.UIPanel;
   private readonly kilnNameBtn: xb.UIButton;
   private readonly kilnSaveBtn: xb.UIButton;
+  private readonly kilnAnotherBtn: xb.UIButton;
   private readonly kilnSaveStatusText: xb.UIText;
   private kilnNameIdx = 0;
   private customKilnName = '';
@@ -285,8 +319,8 @@ export class VRStudioPanel extends THREE.Group {
     const navEntries: Array<[AppScreen, string]> = [
       ['welcome', 'Home'],
       ['start-studio', 'Modes'],
-      ['tutorial', 'Guide'],
       ['studio', 'Wheel'],
+      ['name-studio', 'Names'],
       ['glaze', 'Glaze'],
       ['gallery', 'Gallery'],
       ['settings', 'Settings'],
@@ -296,8 +330,11 @@ export class VRStudioPanel extends THREE.Group {
       children: navEntries.map(([scr, lbl]) => {
         const btn = new xb.UIButton({
           label: lbl,
-          style: { flexGrow: 1, fontSize: 13, padding: 6 },
-          onClick: () => actions.onNavigate(scr),
+          style: { flexGrow: 1, fontSize: 12, padding: 6 },
+          onClick: () =>
+            scr === 'name-studio'
+              ? actions.onOpenNameStudio()
+              : actions.onNavigate(scr),
         });
         this.navButtons.set(scr, btn);
         return btn;
@@ -315,27 +352,27 @@ export class VRStudioPanel extends THREE.Group {
       style: { width: '100%', flexDirection: 'column', gap: 10 },
       children: [
         new xb.UIText({
-          text: 'Hands-First WebXR Pottery Studio',
+          text: 'Hands-First WebXR Pottery & Clay Names',
           style: { fontSize: 20, fontWeight: 'bold' },
         }),
         new xb.UIText({
-          text: '100% controller-free spatial craft. Pinch any button with your hand ray or touch directly, sculpt living clay with both hands, fire glazed vessels, and export 3D .glb models.',
+          text: '100% controller-free spatial craft. Throw living pottery on the wheel or sculpt 3D Clay Names by hand, paint folk motifs, glaze, fire, and smash with a bat.',
           style: { fontSize: 14, lineHeight: 1.35, opacity: 0.85 },
         }),
         new xb.UIPanel({
           style: { width: '100%', flexDirection: 'row', gap: 8 },
           children: [
             new xb.UIButton({
-              label: 'Choose Mode & Start',
-              icon: 'play_arrow',
+              label: 'Pottery Wheel',
+              icon: 'cyclone',
               style: { flexGrow: 1, fontSize: 15, padding: 10 },
               onClick: () => actions.onNavigate('start-studio'),
             }),
             new xb.UIButton({
-              label: 'Quick Free Wheel',
-              icon: 'cyclone',
+              label: 'Clay Names (3D)',
+              icon: 'title',
               style: { flexGrow: 1, fontSize: 15, padding: 10 },
-              onClick: () => actions.onStartMode('free'),
+              onClick: () => actions.onOpenNameStudio(),
             }),
           ],
         }),
@@ -467,12 +504,18 @@ export class VRStudioPanel extends THREE.Group {
           style: { width: '100%', flexDirection: 'row', gap: 8 },
           children: [
             new xb.UIButton({
-              label: 'Back to Home',
+              label: 'Back',
               icon: 'arrow_back',
               style: { flexGrow: 1, fontSize: 14, padding: 10 },
               onClick: () => actions.onNavigate('welcome'),
             }),
             this.startOpenBtn,
+            new xb.UIButton({
+              label: 'Clay Names',
+              icon: 'title',
+              style: { flexGrow: 1, fontSize: 14, padding: 10 },
+              onClick: () => actions.onOpenNameStudio(),
+            }),
           ],
         }),
       ],
@@ -907,6 +950,16 @@ export class VRStudioPanel extends THREE.Group {
         }),
       });
 
+    this.glazeBackBtn = new xb.UIButton({
+      label: 'Back to Wheel',
+      icon: 'arrow_back',
+      style: { flexGrow: 1, fontSize: 14, padding: 9 },
+      onClick: () =>
+        actions.onNavigate(
+          this.latestCreationKind === 'name' ? 'name-studio' : 'studio'
+        ),
+    });
+
     const glazePanel = new xb.UIPanel({
       visible: false,
       style: { display: 'none', width: '100%', flexDirection: 'column', gap: 8 },
@@ -922,17 +975,174 @@ export class VRStudioPanel extends THREE.Group {
         new xb.UIPanel({
           style: { width: '100%', flexDirection: 'row', gap: 8 },
           children: [
-            new xb.UIButton({
-              label: 'Back to Wheel',
-              icon: 'arrow_back',
-              style: { flexGrow: 1, fontSize: 14, padding: 9 },
-              onClick: () => actions.onNavigate('studio'),
-            }),
+            this.glazeBackBtn,
             new xb.UIButton({
               label: 'Fire in Magical Kiln',
               icon: 'local_fire_department',
               style: { flexGrow: 2, fontSize: 14, padding: 9 },
               onClick: () => actions.onFireKiln(),
+            }),
+          ],
+        }),
+      ],
+    });
+
+    // --- 7B. CLAY NAMES STUDIO PANEL ---
+    this.nameWordTitle = new xb.UIText({
+      text: 'Clay Name: "CLAY HANDS"',
+      style: { fontSize: 17, fontWeight: 'bold' },
+    });
+    const vrNameWords = ['CLAY', 'LOVE', 'PEACE', 'HOME', 'STAR', 'SMILE'];
+    const nameWordRow = new xb.UIPanel({
+      style: { width: '100%', flexDirection: 'row', gap: 4 },
+      children: vrNameWords.map((w) => {
+        const btn = new xb.UIButton({
+          label: w,
+          style: { flexGrow: 1, fontSize: 12, padding: 6 },
+          onClick: () => actions.onSetClayNameText(w),
+        });
+        this.namePresetBtns.set(w, btn);
+        return btn;
+      }),
+    });
+
+    const vrShapes: Array<[ClayNamePlaqueShape, string]> = [
+      ['tablet', 'Tablet'],
+      ['oval', 'Oval'],
+      ['ribbon', 'Banner'],
+      ['heart', 'Heart'],
+    ];
+    const nameShapeRow = new xb.UIPanel({
+      style: { width: '100%', flexDirection: 'row', gap: 5 },
+      children: vrShapes.map(([sId, lbl]) => {
+        const btn = new xb.UIButton({
+          label: lbl,
+          style: { flexGrow: 1, fontSize: 12, padding: 6 },
+          onClick: () => actions.onSetClayNameShape(sId),
+        });
+        this.nameShapeBtns.set(sId, btn);
+        return btn;
+      }),
+    });
+
+    const vrTools: Array<[ClayNameTool, string]> = [
+      ['sculpt_puff', 'Raise'],
+      ['sculpt_carve', 'Carve'],
+      ['sculpt_smooth', 'Smooth'],
+      ['stamp_heart', 'Stamp ♥'],
+      ['paint', 'Paint'],
+    ];
+    const nameToolRow = new xb.UIPanel({
+      style: { width: '100%', flexDirection: 'row', gap: 4 },
+      children: vrTools.map(([tId, lbl]) => {
+        const btn = new xb.UIButton({
+          label: lbl,
+          style: { flexGrow: 1, fontSize: 12, padding: 6 },
+          onClick: () => actions.onSetClayNameTool(tId),
+        });
+        this.nameToolBtns.set(tId, btn);
+        return btn;
+      }),
+    });
+
+    this.nameReliefVal = new xb.UIText({
+      text: '24 mm',
+      style: { fontSize: 13, fontWeight: 'bold' },
+    });
+    this.nameReliefSlider = new xb.UISlider({
+      ariaLabel: 'Letter Relief Depth',
+      min: 8,
+      max: 34,
+      step: 1,
+      value: 24,
+      style: { width: '100%', height: 28 },
+      onInput: (val) => {
+        this.nameReliefVal.text = `${Math.round(val)} mm`;
+        actions.onSetClayNameRelief(val / 1000);
+      },
+    });
+
+    this.nameBoldVal = new xb.UIText({
+      text: '1.00x',
+      style: { fontSize: 13, fontWeight: 'bold' },
+    });
+    this.nameBoldSlider = new xb.UISlider({
+      ariaLabel: 'Letter Boldness',
+      min: 0.65,
+      max: 1.55,
+      step: 0.05,
+      value: 1.0,
+      style: { width: '100%', height: 28 },
+      onInput: (val) => {
+        this.nameBoldVal.text = `${val.toFixed(2)}x`;
+        actions.onSetClayNameBoldness(val);
+      },
+    });
+
+    this.nameUndoBtn = new xb.UIButton({
+      label: 'Undo',
+      icon: 'undo',
+      style: { flexGrow: 1, fontSize: 13, padding: 7 },
+      onClick: () => actions.onUndoClayName(),
+    });
+
+    const nameStudioPanel = new xb.UIPanel({
+      visible: false,
+      style: { display: 'none', width: '100%', flexDirection: 'column', gap: 7 },
+      children: [
+        this.nameWordTitle,
+        new xb.UIText({
+          text: 'Pinch anywhere on the clay easel plaque with your hand to sculpt or paint!',
+          style: { fontSize: 12, opacity: 0.85 },
+        }),
+        nameWordRow,
+        nameShapeRow,
+        nameToolRow,
+        new xb.UIPanel({
+          style: {
+            width: '100%',
+            flexDirection: 'row',
+            justifyContent: 'space-between',
+          },
+          children: [
+            new xb.UIText({ text: '3D Letter Relief', style: { fontSize: 12 } }),
+            this.nameReliefVal,
+          ],
+        }),
+        this.nameReliefSlider,
+        new xb.UIPanel({
+          style: {
+            width: '100%',
+            flexDirection: 'row',
+            justifyContent: 'space-between',
+          },
+          children: [
+            new xb.UIText({ text: 'Letter Boldness', style: { fontSize: 12 } }),
+            this.nameBoldVal,
+          ],
+        }),
+        this.nameBoldSlider,
+        new xb.UIPanel({
+          style: { width: '100%', flexDirection: 'row', gap: 5 },
+          children: [
+            this.nameUndoBtn,
+            new xb.UIButton({
+              label: 'Reset',
+              icon: 'restart_alt',
+              style: { flexGrow: 1, fontSize: 13, padding: 7 },
+              onClick: () => actions.onResetClayName(),
+            }),
+            new xb.UIButton({
+              label: 'Save',
+              icon: 'bookmark_add',
+              style: { flexGrow: 1, fontSize: 13, padding: 7 },
+              onClick: () => actions.onFinishClayName(false),
+            }),
+            new xb.UIButton({
+              label: 'Glaze & Fire',
+              icon: 'local_fire_department',
+              style: { flexGrow: 1.4, fontSize: 13, padding: 7 },
+              onClick: () => actions.onFinishClayName(true),
             }),
           ],
         }),
@@ -990,6 +1200,22 @@ export class VRStudioPanel extends THREE.Group {
       style: { display: 'none', fontSize: 13, color: '#8be09e', textAlign: 'center' },
     });
 
+    this.kilnAnotherBtn = new xb.UIButton({
+      label: 'Throw Another',
+      icon: 'restart_alt',
+      style: { flexGrow: 1, fontSize: 13, padding: 8 },
+      onClick: () => {
+        this.customKilnName = '';
+        this.kilnNameIdx = 0;
+        this.kilnNameBtn.label = 'Name: Auto';
+        if (this.latestCreationKind === 'name') {
+          actions.onOpenNameStudio();
+        } else {
+          actions.onStartMode('free');
+        }
+      },
+    });
+
     this.kilnDonePanel = new xb.UIPanel({
       visible: false,
       style: { display: 'none', width: '100%', flexDirection: 'column', gap: 8 },
@@ -1014,17 +1240,7 @@ export class VRStudioPanel extends THREE.Group {
               style: { flexGrow: 1, fontSize: 13, padding: 8 },
               onClick: () => actions.onNavigate('gallery'),
             }),
-            new xb.UIButton({
-              label: 'Throw Another',
-              icon: 'restart_alt',
-              style: { flexGrow: 1, fontSize: 13, padding: 8 },
-              onClick: () => {
-                this.customKilnName = '';
-                this.kilnNameIdx = 0;
-                this.kilnNameBtn.label = 'Name: Auto';
-                actions.onStartMode('free');
-              },
-            }),
+            this.kilnAnotherBtn,
           ],
         }),
       ],
@@ -1390,6 +1606,7 @@ export class VRStudioPanel extends THREE.Group {
       'webcam-permission': welcomePanel,
       'hand-calibration': welcomePanel,
       studio: studioPanel,
+      'name-studio': nameStudioPanel,
       tutorial: tutorialPanel,
       glaze: glazePanel,
       kiln: kilnPanel,
@@ -1410,6 +1627,7 @@ export class VRStudioPanel extends THREE.Group {
         startStudioPanel,
         tutorialPanel,
         studioPanel,
+        nameStudioPanel,
         glazePanel,
         this.brushSectionPanel,
         kilnPanel,
@@ -1511,9 +1729,12 @@ export class VRStudioPanel extends THREE.Group {
     // Welcome counts
     this.welcomeGalleryBtn.label = `Pottery Gallery (${state.galleryItems.length})`;
 
-    // Shared Brush section visible only when painting in Studio or Glaze
+    this.latestCreationKind = state.activeCreationKind;
+
+    // Shared Brush section visible when painting in Studio, Name Studio, or Glaze
     const showBrush =
       (state.screen === 'studio' && state.brushActive && !state.showResetConfirm && !state.showCelebration) ||
+      (state.screen === 'name-studio' && state.clayNameTool === 'paint') ||
       (state.screen === 'glaze' && state.glazePaintMode);
     this.setShown(this.brushSectionPanel, showBrush);
 
@@ -1620,15 +1841,51 @@ export class VRStudioPanel extends THREE.Group {
       }
     }
 
+    // Clay Names live state
+    if (state.screen === 'name-studio') {
+      this.nameWordTitle.text = `Clay Name: "${state.clayNameText.trim() || 'CLAY HANDS'}"`;
+      for (const [word, btn] of this.namePresetBtns.entries()) {
+        btn.style.backgroundColor =
+          state.clayNameText.trim().toUpperCase() === word ? '#b84f33' : undefined;
+      }
+      for (const [sId, btn] of this.nameShapeBtns.entries()) {
+        btn.style.backgroundColor =
+          state.clayNameShape === sId ? '#b84f33' : undefined;
+      }
+      for (const [tId, btn] of this.nameToolBtns.entries()) {
+        btn.style.backgroundColor =
+          state.clayNameTool === tId ? '#b84f33' : undefined;
+      }
+      if (Math.abs(this.lastNameReliefMm - state.clayNameReliefMm) > 0.4) {
+        this.lastNameReliefMm = state.clayNameReliefMm;
+        this.nameReliefSlider.value = Math.round(state.clayNameReliefMm);
+        this.nameReliefVal.text = `${Math.round(state.clayNameReliefMm)} mm`;
+      }
+      if (Math.abs(this.lastNameBoldness - state.clayNameBoldness) > 0.02) {
+        this.lastNameBoldness = state.clayNameBoldness;
+        this.nameBoldSlider.value = state.clayNameBoldness;
+        this.nameBoldVal.text = `${state.clayNameBoldness.toFixed(2)}x`;
+      }
+      this.nameUndoBtn.disabled = !state.canUndoClayName;
+    }
+
     // Glaze live state
     if (state.screen === 'glaze') {
       const glaze =
         GLAZE_CATALOG.find((g) => g.id === state.glazeId) ?? GLAZE_CATALOG[0];
-      this.glazeVesselTitle.text = `${state.personality?.name ?? 'Studio Vessel'} · ${glaze.name} (${glaze.finishLabel})`;
-      if (state.personality) {
+      const baseTitle =
+        state.activeCreationKind === 'name'
+          ? `${state.clayNameText.trim() || 'Clay'} Nameplate`
+          : state.personality?.name ?? 'Studio Vessel';
+      this.glazeVesselTitle.text = `${baseTitle} · ${glaze.name} (${glaze.finishLabel})`;
+      if (state.activeCreationKind === 'name') {
+        this.glazeVesselMeta.text = `56 cm × 27 cm ${state.clayNameShape} nameplate · Paint & choose kiln glaze`;
+      } else if (state.personality) {
         const m = state.personality.measurements;
         this.glazeVesselMeta.text = `H ${m.heightCm} cm · W ${m.maxWidthCm} cm · Rim ${m.openingWidthCm} cm`;
       }
+      this.glazeBackBtn.label =
+        state.activeCreationKind === 'name' ? 'Back to Name' : 'Back to Wheel';
       this.glazePaintBtn.style.backgroundColor = state.glazePaintMode
         ? '#b84f33'
         : undefined;
@@ -1653,8 +1910,13 @@ export class VRStudioPanel extends THREE.Group {
       this.kilnTempText.text = state.kilnTemp;
       this.kilnProgressFill.style.width = `${Math.round(state.kilnProgress * 100)}%`;
       this.setShown(this.kilnDonePanel, state.kilnFinished);
+      this.kilnAnotherBtn.label =
+        state.activeCreationKind === 'name' ? 'Craft Another Name' : 'Throw Another';
       if (state.kilnFinished) {
-        const fallbackName = state.personality?.name ?? 'Studio Vessel';
+        const fallbackName =
+          state.activeCreationKind === 'name'
+            ? `${state.clayNameText.trim() || 'Clay'} Nameplate`
+            : state.personality?.name ?? 'Studio Vessel';
         this.kilnNameBtn.label = `Name: ${this.customKilnName || fallbackName}`;
         this.kilnSaveBtn.disabled = state.saveStatus.saved;
         this.kilnSaveBtn.label = state.saveStatus.saved

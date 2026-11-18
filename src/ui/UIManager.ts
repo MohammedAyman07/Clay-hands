@@ -9,6 +9,8 @@ import { VILLAGE_PIGMENTS } from '../pottery/VesselPainter.ts';
 import type {
   AppScreen,
   BrushSizePreset,
+  ClayNamePlaqueShape,
+  ClayNameTool,
   GameMode,
   GestureState,
   GuidedLessonId,
@@ -89,9 +91,19 @@ export interface UIActions {
   onTutorialNext: () => void;
   onTutorialResetPractice: () => void;
   onEnableWebcamFromTutorial: () => Promise<void>;
+  onOpenNameStudio: (inputMode?: InputMode) => void;
+  onSetClayNameText: (text: string) => void;
+  onSetClayNameShape: (shape: ClayNamePlaqueShape) => void;
+  onSetClayNameTool: (tool: ClayNameTool) => void;
+  onSetClayNameRelief: (meters: number) => void;
+  onSetClayNameBoldness: (boldness: number) => void;
+  onUndoClayName: () => void;
+  onResetClayName: () => void;
+  onFinishClayName: (goToGlaze: boolean) => void;
 }
 
 export interface StudioHUDState {
+  activeCreationKind: 'vessel' | 'name';
   stage: PotteryStage;
   gesture: GestureState;
   inputMode: InputMode;
@@ -134,6 +146,12 @@ export interface StudioHUDState {
   tutorialMatched: boolean;
   tutorialProgress: number;
   tutorialFinishedAll: boolean;
+  clayNameText: string;
+  clayNameShape: ClayNamePlaqueShape;
+  clayNameTool: ClayNameTool;
+  clayNameReliefMm: number;
+  clayNameBoldness: number;
+  canUndoClayName: boolean;
 }
 
 const HAND_CONNECTIONS: Array<[number, number]> = [
@@ -207,6 +225,9 @@ export class UIManager {
         break;
       case 'studio':
         this.renderStudioHUD(settings, hud);
+        break;
+      case 'name-studio':
+        this.renderNameStudioScreen(settings, hud);
         break;
       case 'tutorial':
         this.renderTutorial(settings, hud);
@@ -308,6 +329,75 @@ export class UIManager {
       }
       if (simScoreEl && hud.similarity) {
         simScoreEl.textContent = `${hud.similarity.score}% match`;
+      }
+      if (
+        this.pipCanvas &&
+        settings.showWebcamPip &&
+        hud.inputMode === 'webcam' &&
+        video &&
+        video.readyState >= 2
+      ) {
+        this.drawWebcamOverlay(this.pipCanvas, video, frame);
+      }
+      return;
+    }
+
+    if (this.currentScreen === 'name-studio') {
+      const gestureEl = document.getElementById('hud-gesture-desc');
+      const trackBadge = document.getElementById('hud-tracking-badge');
+      const undoBtn = document.getElementById(
+        'name-undo-btn'
+      ) as HTMLButtonElement | null;
+      const paintClearBtn = document.getElementById(
+        'btn-paint-clear'
+      ) as HTMLButtonElement | null;
+      const reliefVal = document.getElementById('name-relief-val');
+      const boldVal = document.getElementById('name-bold-val');
+      const reliefSlider = document.getElementById(
+        'name-relief-slider'
+      ) as HTMLInputElement | null;
+      const boldSlider = document.getElementById(
+        'name-bold-slider'
+      ) as HTMLInputElement | null;
+
+      if (gestureEl) {
+        if (hud.trackingLost) {
+          gestureEl.textContent =
+            'Hands out of view — bring your hand in front of camera or drag plaque with mouse.';
+        } else if (hud.inputMode === 'webcam' || hud.inputMode === 'webxr') {
+          gestureEl.textContent =
+            hud.clayNameTool === 'paint'
+              ? 'Point & pinch across the plaque to paint · Pinch or spread both hands to resize letters.'
+              : hud.gesture.description;
+        } else {
+          gestureEl.textContent =
+            hud.clayNameTool === 'paint'
+              ? 'Drag directly on the clay plaque to paint letters & border.'
+              : 'Drag across the clay plaque to sculpt, stamp ♥, or smooth by hand.';
+        }
+      }
+      if (trackBadge) {
+        trackBadge.textContent =
+          hud.inputMode === 'webcam'
+            ? hud.trackingLost
+              ? 'Webcam · Show Hand'
+              : `Webcam · ${frame.hands.length} Hand${frame.hands.length === 1 ? '' : 's'}`
+            : hud.inputMode === 'webxr'
+              ? `WebXR · ${frame.hands.length} Hand${frame.hands.length === 1 ? '' : 's'}`
+              : 'Mouse & Hand Tools';
+        trackBadge.className = `status-pill ${
+          hud.trackingLost ? 'status-warn' : 'status-ok'
+        }`;
+      }
+      if (undoBtn) undoBtn.disabled = !hud.canUndoClayName;
+      if (paintClearBtn) paintClearBtn.disabled = !hud.hasPaint;
+      if (reliefVal) reliefVal.textContent = `${Math.round(hud.clayNameReliefMm)} mm`;
+      if (boldVal) boldVal.textContent = `${hud.clayNameBoldness.toFixed(2)}x`;
+      if (reliefSlider && document.activeElement !== reliefSlider) {
+        reliefSlider.value = String(Math.round(hud.clayNameReliefMm));
+      }
+      if (boldSlider && document.activeElement !== boldSlider) {
+        boldSlider.value = String(hud.clayNameBoldness.toFixed(2));
       }
       if (
         this.pipCanvas &&
@@ -506,7 +596,8 @@ export class UIManager {
         </ul>
         <div class="welcome-actions">
           <div class="welcome-primary-row">
-            <button class="btn btn-primary btn-welcome-main" id="btn-enter-studio">Enter Studio</button>
+            <button class="btn btn-primary btn-welcome-main" id="btn-enter-studio">Pottery Wheel</button>
+            <button class="btn btn-primary btn-welcome-main" id="btn-open-names">Clay Names</button>
             ${
               hud.showHandCursorControl
                 ? `<button class="btn ${hud.handCursorActive ? 'btn-hand-active' : 'btn-secondary'} btn-welcome-main" id="btn-welcome-hand-cursor">
@@ -527,7 +618,7 @@ export class UIManager {
           </div>
         </div>
         <div class="control-hint-line">
-          <span>Quest Hand Tracking · Local MediaPipe Hands${hud.showHandCursorControl ? ' · Pinch UI Cursor' : ''} · Mouse Fallback${hud.vrSupported ? ' · WebXR Ready' : ''}</span>
+          <span>Pottery Wheel &amp; 3D Clay Names · Quest Hand Tracking · Local MediaPipe Hands${hud.showHandCursorControl ? ' · Pinch UI Cursor' : ''} · Mouse Fallback</span>
         </div>
       </div>
     `;
@@ -535,6 +626,9 @@ export class UIManager {
 
     el.querySelector('#btn-enter-studio')?.addEventListener('click', () =>
       this.actions.onNavigate('start-studio')
+    );
+    el.querySelector('#btn-open-names')?.addEventListener('click', () =>
+      this.actions.onOpenNameStudio()
     );
     el.querySelector('#btn-welcome-hand-cursor')?.addEventListener('click', () =>
       this.actions.onToggleHandCursor()
@@ -668,6 +762,18 @@ export class UIManager {
           </div>
         </div>
 
+        <div class="name-mode-banner">
+          <div>
+            <p class="eyebrow">NEW HAND CRAFT</p>
+            <h3>3D Clay Names &amp; Signs</h3>
+            <p class="mouse-tip">Type any name or word, pick tablet / oval / banner / heart clay, and sculpt or paint it easily with your hands.</p>
+          </div>
+          <div class="cta-row">
+            <button class="btn btn-primary btn-small" id="btn-start-names-webcam">Clay Names (Hands)</button>
+            <button class="btn btn-secondary btn-small" id="btn-start-names-mouse">Clay Names (Mouse)</button>
+          </div>
+        </div>
+
         <div class="input-choice-bar">
           ${
             hud.vrSupported
@@ -770,6 +876,12 @@ export class UIManager {
 
     el.querySelector('#btn-back-welcome')?.addEventListener('click', () =>
       this.actions.onNavigate('welcome')
+    );
+    el.querySelector('#btn-start-names-webcam')?.addEventListener('click', () =>
+      this.actions.onOpenNameStudio('webcam')
+    );
+    el.querySelector('#btn-start-names-mouse')?.addEventListener('click', () =>
+      this.actions.onOpenNameStudio('mouse')
     );
     el.querySelector('#btn-start-vr')?.addEventListener('click', () => {
       void this.actions.onStartMode(chosenMode, 'mouse', chosenLesson, chosenChallenge);
@@ -1132,6 +1244,251 @@ export class UIManager {
     });
   }
 
+  private renderNameStudioScreen(
+    settings: StudioSettings,
+    hud: StudioHUDState
+  ): void {
+    const el = document.createElement('div');
+    el.className = 'studio-hud';
+    const safeNameVal = hud.clayNameText.replace(/"/g, '&quot;');
+    const presets = ['CLAY', 'LOVE', 'PEACE', 'HOME', 'STAR', 'SMILE'];
+    const shapes: Array<[ClayNamePlaqueShape, string]> = [
+      ['tablet', 'Tablet'],
+      ['oval', 'Oval'],
+      ['ribbon', 'Banner'],
+      ['heart', 'Heart'],
+    ];
+    const tools: Array<[ClayNameTool, string]> = [
+      ['sculpt_puff', 'Raise Clay'],
+      ['sculpt_carve', 'Carve In'],
+      ['sculpt_smooth', 'Smooth'],
+      ['stamp_heart', 'Stamp ♥'],
+      ['paint', 'Paint Brush'],
+    ];
+
+    el.innerHTML = `
+      <div class="hud-top-row">
+        <div class="hud-corner-card">
+          <div class="hud-title-line">
+            <span class="studio-badge">CLAY NAMES</span>
+            <span id="hud-tracking-badge" class="status-pill ${hud.trackingLost ? 'status-warn' : 'status-ok'}">${
+              hud.inputMode === 'webcam'
+                ? 'Webcam · Hands Ready'
+                : hud.inputMode === 'webxr'
+                  ? 'WebXR · Hands Ready'
+                  : 'Mouse & Hand Tools'
+            }</span>
+          </div>
+          <h2 class="compact-title">3D Clay Nameplate</h2>
+          <p class="gesture-desc" id="hud-gesture-desc">${
+            hud.inputMode === 'webcam' || hud.inputMode === 'webxr'
+              ? 'Point index finger & pinch plaque to sculpt/paint · Spread hands = Bolder · Raise hands = Deeper 3D.'
+              : 'Drag across the clay plaque to sculpt or paint · Switch to Webcam Hands anytime.'
+          }</p>
+        </div>
+
+        <div class="hud-top-right">
+          ${
+            hud.inputMode === 'webcam' && settings.showWebcamPip
+              ? `<div class="webcam-pip-card">
+                   <canvas id="pip-canvas" width="192" height="144"></canvas>
+                 </div>`
+              : ''
+          }
+          <div class="hud-quick-actions">
+            ${
+              hud.inputMode !== 'webcam'
+                ? `<button class="btn btn-small btn-primary" id="btn-name-webcam">Use Hand Camera</button>`
+                : `<button class="btn btn-small btn-secondary" id="hud-recal-btn">Recalibrate</button>`
+            }
+            ${
+              hud.vrSupported
+                ? `<button class="btn btn-small btn-vr" id="hud-vr-btn">${hud.inVR ? 'Exit VR' : 'Enter VR'}</button>`
+                : ''
+            }
+            ${
+              hud.showHandCursorControl
+                ? `<button class="btn btn-small ${hud.handCursorActive ? 'btn-hand-active' : 'btn-secondary'}" id="btn-hud-hand-cursor">${hud.handCursorActive ? 'Hand Cursor: ON' : 'Hand Cursor'}</button>`
+                : ''
+            }
+            <button class="btn btn-small btn-secondary" id="btn-name-wheel">Pottery Wheel</button>
+            <button class="btn btn-small btn-secondary" id="btn-name-gal">Gallery</button>
+            <button class="btn btn-small btn-ghost" id="hud-exit-btn">Home</button>
+          </div>
+        </div>
+      </div>
+
+      ${
+        hud.clayNameTool === 'paint'
+          ? `<aside class="brush-side-rail" aria-label="Clay name paint brush">
+               <p class="rail-eyebrow">VILLAGE BRUSH</p>
+               ${this.renderBrushToolbarHTML(hud, false)}
+             </aside>`
+          : ''
+      }
+
+      <div class="bottom-dock-wrap ${this.dockCollapsed ? 'dock-collapsed' : ''}">
+        <button class="dock-toggle-btn" id="btn-toggle-dock">
+          ${this.dockCollapsed ? '▴ Show Name Controls' : '▾ Hide Name Controls'}
+        </button>
+        <div class="bottom-dock bottom-dock-names">
+          <div class="name-dock-row">
+            <div class="name-input-row">
+              <label class="dock-label" for="name-text-input">Name</label>
+              <input id="name-text-input" class="text-input name-word-input" type="text" maxlength="16" value="${safeNameVal}" placeholder="Type name..." />
+            </div>
+            <div class="name-preset-chips">
+              ${presets
+                .map(
+                  (w) =>
+                    `<button class="chip ${hud.clayNameText.toUpperCase() === w ? 'chip-active' : ''}" data-name-word="${w}">${w}</button>`
+                )
+                .join('')}
+            </div>
+            <div class="name-shape-chips">
+              ${shapes
+                .map(
+                  ([sId, label]) =>
+                    `<button class="chip ${hud.clayNameShape === sId ? 'chip-active' : ''}" data-name-shape="${sId}">${label}</button>`
+                )
+                .join('')}
+            </div>
+          </div>
+
+          <div class="name-dock-row">
+            <div class="dock-tools">
+              ${tools
+                .map(
+                  ([tId, label]) =>
+                    `<button class="chip ${hud.clayNameTool === tId ? 'chip-active' : ''}" data-name-tool="${tId}">${label}</button>`
+                )
+                .join('')}
+            </div>
+            <div class="dock-group">
+              <label class="dock-label" for="name-relief-slider">Relief</label>
+              <input id="name-relief-slider" type="range" min="8" max="34" step="1" value="${Math.round(hud.clayNameReliefMm)}" />
+              <span id="name-relief-val" class="tabular dock-val">${Math.round(hud.clayNameReliefMm)} mm</span>
+            </div>
+            <div class="dock-group">
+              <label class="dock-label" for="name-bold-slider">Bold</label>
+              <input id="name-bold-slider" type="range" min="0.65" max="1.55" step="0.05" value="${hud.clayNameBoldness.toFixed(2)}" />
+              <span id="name-bold-val" class="tabular dock-val">${hud.clayNameBoldness.toFixed(2)}x</span>
+            </div>
+            <div class="dock-actions">
+              <button class="btn btn-small btn-secondary" id="name-undo-btn" ${hud.canUndoClayName ? '' : 'disabled'}>Undo</button>
+              <button class="btn btn-small btn-secondary" id="name-reset-btn">Reset</button>
+              <button class="btn btn-small btn-secondary" id="name-save-btn">Save Now</button>
+              <button class="btn btn-small btn-primary" id="name-glaze-btn">Glaze & Fire</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    `;
+
+    this.root.appendChild(el);
+    this.pipCanvas = el.querySelector('#pip-canvas');
+
+    el.querySelector('#btn-toggle-dock')?.addEventListener('click', () => {
+      this.dockCollapsed = !this.dockCollapsed;
+      el.querySelector('.bottom-dock-wrap')?.classList.toggle(
+        'dock-collapsed',
+        this.dockCollapsed
+      );
+      const toggle = el.querySelector('#btn-toggle-dock');
+      if (toggle) {
+        toggle.textContent = this.dockCollapsed
+          ? '▴ Show Name Controls'
+          : '▾ Hide Name Controls';
+      }
+    });
+
+    const nameInput = el.querySelector('#name-text-input') as HTMLInputElement | null;
+    nameInput?.addEventListener('input', () => {
+      this.actions.onSetClayNameText(nameInput.value);
+      el.querySelectorAll('[data-name-word]').forEach((b) => {
+        const w = (b as HTMLElement).dataset.nameWord ?? '';
+        b.classList.toggle('chip-active', nameInput.value.trim().toUpperCase() === w);
+      });
+    });
+
+    el.querySelectorAll('[data-name-word]').forEach((b) => {
+      b.addEventListener('click', () => {
+        const word = (b as HTMLElement).dataset.nameWord ?? 'CLAY';
+        if (nameInput) nameInput.value = word;
+        this.actions.onSetClayNameText(word);
+        el.querySelectorAll('[data-name-word]').forEach((btn) =>
+          btn.classList.toggle('chip-active', btn === b)
+        );
+      });
+    });
+
+    el.querySelectorAll('[data-name-shape]').forEach((b) => {
+      b.addEventListener('click', () => {
+        const shape = (b as HTMLElement).dataset.nameShape as ClayNamePlaqueShape;
+        if (shape) this.actions.onSetClayNameShape(shape);
+      });
+    });
+
+    el.querySelectorAll('[data-name-tool]').forEach((b) => {
+      b.addEventListener('click', () => {
+        const tool = (b as HTMLElement).dataset.nameTool as ClayNameTool;
+        if (tool) this.actions.onSetClayNameTool(tool);
+      });
+    });
+
+    const reliefSlider = el.querySelector('#name-relief-slider') as HTMLInputElement | null;
+    reliefSlider?.addEventListener('input', () => {
+      const mm = parseFloat(reliefSlider.value);
+      const lbl = el.querySelector('#name-relief-val');
+      if (lbl) lbl.textContent = `${Math.round(mm)} mm`;
+      this.actions.onSetClayNameRelief(mm / 1000);
+    });
+
+    const boldSlider = el.querySelector('#name-bold-slider') as HTMLInputElement | null;
+    boldSlider?.addEventListener('input', () => {
+      const bold = parseFloat(boldSlider.value);
+      const lbl = el.querySelector('#name-bold-val');
+      if (lbl) lbl.textContent = `${bold.toFixed(2)}x`;
+      this.actions.onSetClayNameBoldness(bold);
+    });
+
+    this.bindBrushToolbarEvents(el);
+
+    el.querySelector('#name-undo-btn')?.addEventListener('click', () =>
+      this.actions.onUndoClayName()
+    );
+    el.querySelector('#name-reset-btn')?.addEventListener('click', () =>
+      this.actions.onResetClayName()
+    );
+    el.querySelector('#name-save-btn')?.addEventListener('click', () =>
+      this.actions.onFinishClayName(false)
+    );
+    el.querySelector('#name-glaze-btn')?.addEventListener('click', () =>
+      this.actions.onFinishClayName(true)
+    );
+    el.querySelector('#btn-name-webcam')?.addEventListener('click', () => {
+      void this.actions.onRequestWebcam();
+    });
+    el.querySelector('#hud-recal-btn')?.addEventListener('click', () =>
+      this.actions.onRecalibrate()
+    );
+    el.querySelector('#hud-vr-btn')?.addEventListener('click', () =>
+      this.actions.onToggleVR()
+    );
+    el.querySelector('#btn-hud-hand-cursor')?.addEventListener('click', () =>
+      this.actions.onToggleHandCursor()
+    );
+    el.querySelector('#btn-name-wheel')?.addEventListener('click', () =>
+      this.actions.onNavigate('start-studio')
+    );
+    el.querySelector('#btn-name-gal')?.addEventListener('click', () =>
+      this.actions.onNavigate('gallery')
+    );
+    el.querySelector('#hud-exit-btn')?.addEventListener('click', () =>
+      this.actions.onNavigate('welcome')
+    );
+  }
+
   private renderBrushToolbarHTML(
     hud: StudioHUDState,
     includeUndoButton: boolean
@@ -1479,7 +1836,9 @@ export class UIManager {
                    </button>`
                 : ''
             }
-            <button class="btn btn-small btn-secondary" id="btn-glaze-back">Back to Wheel</button>
+            <button class="btn btn-small btn-secondary" id="btn-glaze-back">${
+              hud.activeCreationKind === 'name' ? 'Back to Name' : 'Back to Wheel'
+            }</button>
           </div>
         </div>
       </div>
@@ -1553,7 +1912,9 @@ export class UIManager {
       });
     });
     el.querySelector('#btn-glaze-back')?.addEventListener('click', () =>
-      this.actions.onNavigate('studio')
+      this.actions.onNavigate(
+        hud.activeCreationKind === 'name' ? 'name-studio' : 'studio'
+      )
     );
     el.querySelector('#hud-vr-btn')?.addEventListener('click', () =>
       this.actions.onToggleVR()
@@ -1571,7 +1932,9 @@ export class UIManager {
     el.className = 'studio-hud';
     const done = hud.kilnFinished;
     const defaultName =
-      this.customPotName || hud.personality?.name || 'Studio Vessel';
+      hud.activeCreationKind === 'name'
+        ? `${hud.clayNameText.trim() || 'Clay'} Nameplate`
+        : this.customPotName || hud.personality?.name || 'Studio Vessel';
 
     el.innerHTML = `
       <div class="hud-top-row">
@@ -1606,7 +1969,9 @@ export class UIManager {
           ? `<div class="bottom-dock-wrap">
                <div class="bottom-dock bottom-dock-reveal">
                  <div class="reveal-name-group">
-                   <label class="dock-label" for="vessel-name-input">Vessel Name</label>
+                   <label class="dock-label" for="vessel-name-input">${
+                     hud.activeCreationKind === 'name' ? 'Nameplate Title' : 'Vessel Name'
+                   }</label>
                    <input id="vessel-name-input" class="text-input" type="text" maxlength="40" value="${defaultName}" />
                  </div>
                  <div class="dock-actions">
@@ -1615,7 +1980,9 @@ export class UIManager {
                    </button>
                    <button class="btn btn-secondary" id="btn-export-glb">Export GLB</button>
                    <button class="btn btn-secondary" id="btn-view-gal">Open Gallery</button>
-                   <button class="btn btn-ghost" id="btn-new-pot">Throw Another</button>
+                   <button class="btn btn-ghost" id="btn-new-pot">${
+                     hud.activeCreationKind === 'name' ? 'Craft Another Name' : 'Throw Another'
+                   }</button>
                  </div>
                  ${
                    hud.saveStatus.message
@@ -1724,6 +2091,7 @@ export class UIManager {
                 : ''
             }
             <button class="btn btn-small btn-primary" id="btn-gal-new">Create Pottery</button>
+            <button class="btn btn-small btn-secondary" id="btn-gal-names">Clay Names</button>
             <button class="btn btn-small btn-ghost" id="btn-gal-home">Home</button>
           </div>
         </div>
@@ -1821,6 +2189,9 @@ export class UIManager {
 
     el.querySelector('#btn-gal-new')?.addEventListener('click', () =>
       this.actions.onNavigate('start-studio')
+    );
+    el.querySelector('#btn-gal-names')?.addEventListener('click', () =>
+      this.actions.onOpenNameStudio()
     );
     el.querySelector('#btn-gal-home')?.addEventListener('click', () =>
       this.actions.onNavigate('welcome')
