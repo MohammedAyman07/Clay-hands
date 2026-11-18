@@ -1485,6 +1485,7 @@ export class ClayHandsApp extends xb.Script {
       );
     }
 
+    this.syncPassthroughProps(screen);
     this.rerenderUI();
   }
 
@@ -2330,10 +2331,18 @@ export class ClayHandsApp extends xb.Script {
     );
   }
 
+  private syncPassthroughProps(screen: AppScreen = this.state.screen): void {
+    const pt = this.sceneManager.isPassthroughMode();
+    this.wheel.setTabletopMode(pt);
+    this.kiln.group.visible = !pt || screen === 'kiln';
+    this.sceneManager.galleryGroup.visible = !pt || screen === 'gallery';
+  }
+
   private toggleMRPassthrough(): void {
     if (!this.xrManager.inARSession) return;
     const enabled = this.xrManager.togglePassthroughBackdrop();
     this.sceneManager.setPassthroughMode(enabled);
+    this.syncPassthroughProps(this.state.screen);
     this.rerenderUI();
   }
 
@@ -2352,6 +2361,7 @@ export class ClayHandsApp extends xb.Script {
 
     const passthrough = this.xrManager.syncSessionStarted(session);
     this.sceneManager.setPassthroughMode(passthrough);
+    this.syncPassthroughProps(this.state.screen);
     (
       xb.core?.renderer as
         | (THREE.WebGLRenderer & { xr?: { setFoveation?: (v: number) => void } })
@@ -2386,6 +2396,7 @@ export class ClayHandsApp extends xb.Script {
     if (uiRoot) uiRoot.style.display = '';
     this.xrManager.syncSessionEnded();
     this.sceneManager.setPassthroughMode(false);
+    this.syncPassthroughProps(this.state.screen);
     this.vrPanel.visible = false;
     this.state.inputMode =
       this.desktopInputModeBeforeXR === 'webxr'

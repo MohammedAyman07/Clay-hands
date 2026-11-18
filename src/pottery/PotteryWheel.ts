@@ -64,6 +64,7 @@ function createWoodBatTexture(size = 256): THREE.CanvasTexture {
  */
 export class PotteryWheel {
   public readonly group = new THREE.Group();
+  public readonly floorStandGroup = new THREE.Group();
   public readonly spinnerGroup = new THREE.Group();
   public readonly clayMount = new THREE.Group();
 
@@ -76,7 +77,18 @@ export class PotteryWheel {
 
   constructor(maxAnisotropy = 4) {
     this.group.name = 'PotteryWheel';
+    this.floorStandGroup.name = 'PotteryWheelFloorStand';
+    this.group.add(this.floorStandGroup);
     this.build(maxAnisotropy);
+  }
+
+  /**
+   * Hides tripod floor legs, lower motor column, and floor pedal when in
+   * Mixed Reality "Real Desk" mode so the oak turntable rests cleanly on a
+   * physical table or desk instead of legs clipping through the desk.
+   */
+  public setTabletopMode(enabled: boolean): void {
+    this.floorStandGroup.visible = !enabled;
   }
 
   private build(maxAnisotropy: number): void {
@@ -140,7 +152,7 @@ export class PotteryWheel {
       foot.position.set(Math.cos(angle) * (r + 0.025), 0.012, Math.sin(angle) * (r + 0.025));
       foot.receiveShadow = true;
 
-      this.group.add(leg, foot);
+      this.floorStandGroup.add(leg, foot);
     }
 
     // 2. Motor body & oak table deck
@@ -156,7 +168,8 @@ export class PotteryWheel {
     const motor = new THREE.Mesh(motorGeo, ironMat);
     motor.position.y = 0.51;
     motor.castShadow = true;
-    this.group.add(deck, motor);
+    this.group.add(deck);
+    this.floorStandGroup.add(motor);
 
     // 3. Curved Splash Pan (LatheGeometry)
     const panPoints = [
@@ -217,7 +230,7 @@ export class PotteryWheel {
     pedalTop.rotation.x = 0.18;
     pedalTop.castShadow = true;
 
-    this.group.add(pedalBase, pedalTop);
+    this.floorStandGroup.add(pedalBase, pedalTop);
   }
 
   public update(dt: number, speedMultiplier: number, isSpinning: boolean): void {

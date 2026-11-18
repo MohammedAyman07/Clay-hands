@@ -313,8 +313,15 @@ export class VRStudioPanel extends THREE.Group {
 
     // --- 1. Header & Persistent Nav ---
     this.headerTitle = new xb.UIText({
-      text: 'CLAY HANDS · META QUEST STUDIO',
-      style: { fontSize: 18, fontWeight: 'bold', textAlign: 'left', flexGrow: 1 },
+      text: 'CLAY HANDS · QUEST',
+      style: {
+        fontSize: 16,
+        fontWeight: 'bold',
+        textAlign: 'left',
+        flexGrow: 1,
+        flexShrink: 1,
+        minWidth: 0,
+      },
     });
     this.headerSubtitle = new xb.UIText({
       text: 'Point with either hand ray and pinch to interact.',
@@ -322,11 +329,12 @@ export class VRStudioPanel extends THREE.Group {
     });
 
     this.mrBackdropBtn = new xb.UIButton({
-      label: 'MR: Real Desk',
+      label: 'MR: Real Desk (Tap for VR Room)',
       icon: 'view_in_ar',
       visible: false,
       style: {
         display: 'none',
+        width: '100%',
         fontSize: 12,
         padding: 6,
         backgroundColor: '#2b6b64',
@@ -336,7 +344,7 @@ export class VRStudioPanel extends THREE.Group {
     this.exitXrBtn = new xb.UIButton({
       label: 'Exit VR',
       icon: 'close',
-      style: { fontSize: 13, padding: 6 },
+      style: { fontSize: 12, padding: 6, flexShrink: 0 },
       onClick: () => actions.onExitVR(),
     });
 
@@ -350,11 +358,10 @@ export class VRStudioPanel extends THREE.Group {
       },
       children: [
         this.headerTitle,
-        this.mrBackdropBtn,
         new xb.UIButton({
           label: 'Recenter',
           icon: 'my_location',
-          style: { fontSize: 13, padding: 6 },
+          style: { fontSize: 12, padding: 6, flexShrink: 0 },
           onClick: () => actions.onRecenterStation(),
         }),
         this.exitXrBtn,
@@ -1780,9 +1787,10 @@ export class VRStudioPanel extends THREE.Group {
       size: { width: 0.72, height: 'auto' },
       manipulation: true,
       edge: true,
-      style: { flexDirection: 'column', gap: 10, padding: 16 },
+      style: { flexDirection: 'column', gap: 8, padding: 16 },
       children: [
         headerTop,
+        this.mrBackdropBtn,
         this.headerSubtitle,
         navRow,
         welcomePanel,
@@ -1912,12 +1920,14 @@ export class VRStudioPanel extends THREE.Group {
 
     // Header & status
     const inputTag = state.vrControllerMode
-      ? 'CONTROLLERS IN XR'
+      ? state.inARSession
+        ? 'MR CONTROLLERS'
+        : 'XR CONTROLLERS'
       : state.handsCount > 0
-        ? `${state.handsCount} HAND${state.handsCount === 1 ? '' : 'S'} IN ${state.inARSession ? 'MR' : 'VR'}`
+        ? `${state.handsCount} HAND${state.handsCount === 1 ? '' : 'S'} (${state.inARSession ? 'MR' : 'VR'})`
         : state.inARSession
           ? 'QUEST MR READY'
-          : 'QUEST STUDIO READY';
+          : 'QUEST VR READY';
     this.setText(this.headerTitle, `CLAY HANDS · ${inputTag}`);
     this.setText(this.headerSubtitle, state.gestureDesc);
     const inAR = Boolean(state.inARSession);
@@ -1926,7 +1936,9 @@ export class VRStudioPanel extends THREE.Group {
     if (inAR) {
       this.setLabel(
         this.mrBackdropBtn,
-        ptActive ? 'MR: Real Desk' : 'MR: VR Room'
+        ptActive
+          ? 'MR: Real Desk Active (Tap for Cozy VR Room)'
+          : 'MR: VR Room Active (Tap for Real Desk)'
       );
       this.setBg(this.mrBackdropBtn, ptActive ? '#2b6b64' : '#b84f33');
     }
