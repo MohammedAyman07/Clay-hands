@@ -56,6 +56,13 @@ export async function bootstrapClayHands(): Promise<void> {
   options.xrButton.alwaysAutostartSimulator = false;
   options.enableSimulator = false;
   options.enableVR();
+  options.referenceSpaceType = 'local-floor';
+  if (!options.webxrOptionalFeatures.includes('local-floor')) {
+    options.webxrOptionalFeatures.push('local-floor');
+  }
+  if (!options.webxrOptionalFeatures.includes('hand-tracking')) {
+    options.webxrOptionalFeatures.push('hand-tracking');
+  }
   options.enableHands();
   options.hands.visualization = true;
   options.hands.visualizeMeshes = true;

@@ -1,3 +1,8 @@
+import {
+  filterGalleryItems,
+  formatGalleryItemMeta,
+  getCreationKind,
+} from '../gallery/GalleryManager.ts';
 import type { SmashScope } from '../gallery/PotterySmashSystem.ts';
 import { GLAZE_CATALOG } from '../kiln/GlazeManager.ts';
 import type { KilnStatus } from '../kiln/KilnController.ts';
@@ -11,6 +16,7 @@ import type {
   BrushSizePreset,
   ClayNamePlaqueShape,
   ClayNameTool,
+  GalleryFilter,
   GameMode,
   GestureState,
   GuidedLessonId,
@@ -67,6 +73,7 @@ export interface UIActions {
   onStartKiln: () => void;
   onSaveToGallery: (customName?: string) => void;
   onSelectGalleryItem: (id: string) => void;
+  onLoadGalleryItem: (id: string) => void;
   onRenameGalleryItem: (id: string, name: string) => void;
   onDeleteGalleryItem: (id: string) => void;
   onToggleGallerySmash: () => void;
@@ -93,6 +100,7 @@ export interface UIActions {
   onEnableWebcamFromTutorial: () => Promise<void>;
   onOpenNameStudio: (inputMode?: InputMode) => void;
   onSetClayNameText: (text: string) => void;
+  onBlankClayName: () => void;
   onSetClayNameShape: (shape: ClayNamePlaqueShape) => void;
   onSetClayNameTool: (tool: ClayNameTool) => void;
   onSetClayNameRelief: (meters: number) => void;
@@ -132,6 +140,7 @@ export interface StudioHUDState {
   saveStatus: { saved: boolean; message: string };
   vrSupported: boolean;
   inVR: boolean;
+  vrControllerMode?: boolean;
   vrMessage: string;
   handCursorActive: boolean;
   showHandCursorControl: boolean;
@@ -171,13 +180,17 @@ export class UIManager {
 
   private currentScreen: AppScreen = 'welcome';
   private dockCollapsed = false;
+  private nameStampTrayOpen = false;
   private showCelebrationBanner = false;
   private customPotName = '';
+  private galleryFilter: GalleryFilter = 'all';
 
   // Persistent canvas elements for live webcam PiP / calibration preview
   private pipCanvas: HTMLCanvasElement | null = null;
   private calCanvas: HTMLCanvasElement | null = null;
   private resetConfirmVisible = false;
+  private latestSettings?: StudioSettings;
+  private latestHUD?: StudioHUDState;
 
   constructor(
     root: HTMLElement,
@@ -208,6 +221,8 @@ export class UIManager {
     calibrationProgress?: CalibrationProgress
   ): void {
     this.currentScreen = screen;
+    this.latestSettings = settings;
+    this.latestHUD = hud;
     this.root.innerHTML = '';
 
     switch (screen) {
@@ -257,6 +272,8 @@ export class UIManager {
     settings: StudioSettings,
     calibrationProgress?: CalibrationProgress
   ): void {
+    this.latestHUD = hud;
+    this.latestSettings = settings;
     if (this.currentScreen === 'hand-calibration') {
       const msgEl = document.getElementById('cal-message');
       const barEl = document.getElementById('cal-progress-fill');
@@ -297,10 +314,10 @@ export class UIManager {
       if (gestureEl) {
         if (hud.trackingLost) {
           gestureEl.textContent =
-            'Hands out of view — bring hands back or use mouse fallback.';
+            'Hands out of view — bring your hands back into the shaping zone.';
         } else if (hud.mouseTool === 'brush' && hud.inputMode === 'mouse') {
           gestureEl.textContent =
-            'Brush active — drag directly across the clay vessel to paint.';
+            'Mouse Fallback Brush — drag directly across the vessel to paint.';
         } else {
           gestureEl.textContent = hud.gesture.description;
         }
@@ -312,8 +329,10 @@ export class UIManager {
               ? 'Webcam · Tracking Lost'
               : `Webcam · ${frame.hands.length} Hand${frame.hands.length === 1 ? '' : 's'}`
             : hud.inputMode === 'webxr'
-              ? `WebXR · ${frame.hands.length} Hand${frame.hands.length === 1 ? '' : 's'}`
-              : 'Mouse & Keyboard';
+              ? hud.vrControllerMode
+                ? 'WebXR · Controllers'
+                : `WebXR · ${frame.hands.length} Hand${frame.hands.length === 1 ? '' : 's'}`
+              : 'Mouse Fallback';
         trackBadge.className = `status-pill ${
           hud.trackingLost ? 'status-warn' : 'status-ok'
         }`;
@@ -363,7 +382,7 @@ export class UIManager {
       if (gestureEl) {
         if (hud.trackingLost) {
           gestureEl.textContent =
-            'Hands out of view — bring your hand in front of camera or drag plaque with mouse.';
+            'Hands out of view — bring your hand in front of camera (mouse is fallback only).';
         } else if (hud.inputMode === 'webcam' || hud.inputMode === 'webxr') {
           gestureEl.textContent =
             hud.clayNameTool === 'paint'
@@ -372,8 +391,10 @@ export class UIManager {
         } else {
           gestureEl.textContent =
             hud.clayNameTool === 'paint'
-              ? 'Drag directly on the clay plaque to paint letters & border.'
-              : 'Drag across the clay plaque to sculpt, stamp ♥, or smooth by hand.';
+              ? 'Mouse Fallback: drag plaque to paint letters, or click Enable Hands.'
+              : hud.clayNameTool === 'sculpt_write'
+                ? 'Mouse Fallback: drag plaque to write raised clay, or click Enable Hands.'
+                : 'Mouse Fallback: drag plaque to sculpt, or click Enable Hands.';
         }
       }
       if (trackBadge) {
@@ -383,8 +404,10 @@ export class UIManager {
               ? 'Webcam · Show Hand'
               : `Webcam · ${frame.hands.length} Hand${frame.hands.length === 1 ? '' : 's'}`
             : hud.inputMode === 'webxr'
-              ? `WebXR · ${frame.hands.length} Hand${frame.hands.length === 1 ? '' : 's'}`
-              : 'Mouse & Hand Tools';
+              ? hud.vrControllerMode
+                ? 'WebXR · Controllers'
+                : `WebXR · ${frame.hands.length} Hand${frame.hands.length === 1 ? '' : 's'}`
+              : 'Mouse Fallback';
         trackBadge.className = `status-pill ${
           hud.trackingLost ? 'status-warn' : 'status-ok'
         }`;
@@ -435,7 +458,9 @@ export class UIManager {
           statusEl.className = 'status-pill status-ok';
         } else {
           statusEl.textContent =
-            hud.inputMode === 'mouse' ? step.mouseCue : step.handCue;
+            hud.inputMode === 'mouse'
+              ? `${step.handCue} (Mouse Fallback: ${step.mouseCue})`
+              : step.handCue;
           statusEl.className = 'status-pill status-warn';
         }
       }
@@ -446,8 +471,10 @@ export class UIManager {
               ? 'Webcam · No Hands'
               : `Webcam · ${frame.hands.length} Hand${frame.hands.length === 1 ? '' : 's'}`
             : hud.inputMode === 'webxr'
-              ? `WebXR · ${frame.hands.length} Hand${frame.hands.length === 1 ? '' : 's'}`
-              : 'Mouse Practice';
+              ? hud.vrControllerMode
+                ? 'WebXR · Controllers'
+                : `WebXR · ${frame.hands.length} Hand${frame.hands.length === 1 ? '' : 's'}`
+              : 'Mouse Fallback';
         trackBadge.className = `status-pill ${
           hud.trackingLost ? 'status-warn' : 'status-ok'
         }`;
@@ -479,12 +506,12 @@ export class UIManager {
           gestureEl.textContent = !hud.glazePaintMode
             ? 'Orbit View — drag to inspect, or switch to Paint Brush.'
             : hud.trackingLost
-              ? 'Hands out of view — bring your hand back or drag with mouse.'
+              ? 'Hands out of view — bring your hand back into view.'
               : hud.gesture.description;
         } else {
           gestureEl.textContent = hud.glazePaintMode
-            ? 'Drag pot to brush paint · Drag background to rotate'
-            : 'Drag anywhere to rotate and inspect';
+            ? 'Mouse Fallback: drag pot to paint · Drag background to rotate'
+            : 'Mouse Fallback: drag anywhere to rotate and inspect';
         }
       }
       if (trackBadge) {
@@ -494,8 +521,10 @@ export class UIManager {
               ? 'Webcam · Tracking Lost'
               : `Webcam · ${frame.hands.length} Hand${frame.hands.length === 1 ? '' : 's'}`
             : hud.inputMode === 'webxr'
-              ? `WebXR · ${frame.hands.length} Hand${frame.hands.length === 1 ? '' : 's'}`
-              : 'Mouse & Keyboard';
+              ? hud.vrControllerMode
+                ? 'WebXR · Controllers'
+                : `WebXR · ${frame.hands.length} Hand${frame.hands.length === 1 ? '' : 's'}`
+              : 'Mouse Fallback';
         trackBadge.className = `status-pill ${
           hud.trackingLost ? 'status-warn' : 'status-ok'
         }`;
@@ -596,8 +625,13 @@ export class UIManager {
         </ul>
         <div class="welcome-actions">
           <div class="welcome-primary-row">
-            <button class="btn btn-primary btn-welcome-main" id="btn-enter-studio">Pottery Wheel</button>
-            <button class="btn btn-primary btn-welcome-main" id="btn-open-names">Clay Names</button>
+            ${
+              hud.vrSupported
+                ? '<button class="btn btn-vr btn-welcome-main" id="btn-welcome-vr">Enter Meta Quest VR (Hands)</button>'
+                : ''
+            }
+            <button class="btn btn-primary btn-welcome-main" id="btn-enter-studio">Pottery Wheel (Hands)</button>
+            <button class="btn btn-primary btn-welcome-main" id="btn-open-names">Clay Names (Hands)</button>
             ${
               hud.showHandCursorControl
                 ? `<button class="btn ${hud.handCursorActive ? 'btn-hand-active' : 'btn-secondary'} btn-welcome-main" id="btn-welcome-hand-cursor">
@@ -605,20 +639,15 @@ export class UIManager {
                    </button>`
                 : ''
             }
-            ${
-              hud.vrSupported
-                ? '<button class="btn btn-vr btn-welcome-main" id="btn-welcome-vr">Enter Meta Quest VR</button>'
-                : ''
-            }
           </div>
           <div class="welcome-secondary-grid">
             <button class="btn btn-secondary" id="btn-open-tutorial">Interactive Guide</button>
-            <button class="btn btn-secondary" id="btn-open-gallery">Gallery (${galleryCount})</button>
+            <button class="btn btn-secondary" id="btn-open-gallery">Studio Gallery (${galleryCount})</button>
             <button class="btn btn-secondary" id="btn-open-settings">Settings</button>
           </div>
         </div>
         <div class="control-hint-line">
-          <span>Pottery Wheel &amp; 3D Clay Names · Quest Hand Tracking · Local MediaPipe Hands${hud.showHandCursorControl ? ' · Pinch UI Cursor' : ''} · Mouse Fallback</span>
+          <span>Meta Quest Hand Tracking First · Webcam MediaPipe Hands · Mouse Fallback After</span>
         </div>
       </div>
     `;
@@ -764,24 +793,24 @@ export class UIManager {
 
         <div class="name-mode-banner">
           <div>
-            <p class="eyebrow">NEW HAND CRAFT</p>
+            <p class="eyebrow">HANDS-FIRST 3D CRAFT</p>
             <h3>3D Clay Names &amp; Signs</h3>
-            <p class="mouse-tip">Type any name or word, pick tablet / oval / banner / heart clay, and sculpt or paint it easily with your hands.</p>
+            <p class="mouse-tip">Write your name directly in 3D clay with your hand or pinch A–Z stamps — mouse fallback only after hands.</p>
           </div>
           <div class="cta-row">
             <button class="btn btn-primary btn-small" id="btn-start-names-webcam">Clay Names (Hands)</button>
-            <button class="btn btn-secondary btn-small" id="btn-start-names-mouse">Clay Names (Mouse)</button>
+            <button class="btn btn-ghost btn-small" id="btn-start-names-mouse">Mouse Fallback</button>
           </div>
         </div>
 
         <div class="input-choice-bar">
           ${
             hud.vrSupported
-              ? '<button class="btn btn-vr" id="btn-start-vr">Enter Meta Quest VR</button>'
+              ? '<button class="btn btn-vr" id="btn-start-vr">Enter Meta Quest VR (Hands)</button>'
               : ''
           }
-          <button class="btn btn-primary" id="btn-start-webcam">Webcam Hands</button>
-          <button class="btn btn-secondary" id="btn-start-mouse">Mouse & Keyboard</button>
+          <button class="btn btn-primary" id="btn-start-webcam">Start with Hands (Webcam)</button>
+          <button class="btn btn-ghost" id="btn-start-mouse">Mouse Fallback</button>
         </div>
       </div>
     `;
@@ -863,8 +892,11 @@ export class UIManager {
         const openMode =
           ((btn as HTMLElement).dataset.openMode as GameMode) ?? chosenMode;
         chosenMode = openMode;
-        const preferredInput: InputMode =
-          hud.handCursorActive || hud.inputMode === 'webcam' ? 'webcam' : 'mouse';
+        const preferredInput: InputMode = hud.inVR
+          ? 'webxr'
+          : hud.inputMode === 'mouse'
+            ? 'mouse'
+            : 'webcam';
         void this.actions.onStartMode(
           openMode,
           preferredInput,
@@ -878,14 +910,18 @@ export class UIManager {
       this.actions.onNavigate('welcome')
     );
     el.querySelector('#btn-start-names-webcam')?.addEventListener('click', () =>
-      this.actions.onOpenNameStudio('webcam')
+      this.actions.onOpenNameStudio(hud.inVR ? 'webxr' : 'webcam')
     );
     el.querySelector('#btn-start-names-mouse')?.addEventListener('click', () =>
       this.actions.onOpenNameStudio('mouse')
     );
     el.querySelector('#btn-start-vr')?.addEventListener('click', () => {
-      void this.actions.onStartMode(chosenMode, 'mouse', chosenLesson, chosenChallenge);
-      this.actions.onToggleVR();
+      void this.actions.onStartMode(
+        chosenMode,
+        'webxr',
+        chosenLesson,
+        chosenChallenge
+      );
     });
     el.querySelector('#btn-hud-hand-cursor')?.addEventListener('click', () =>
       this.actions.onToggleHandCursor()
@@ -904,10 +940,10 @@ export class UIManager {
     el.className = 'screen screen-modal';
     el.innerHTML = `
       <div class="panel-card">
-        <p class="eyebrow">CAMERA PERMISSION</p>
+        <p class="eyebrow">HAND TRACKING FIRST</p>
         <h2>Enable Real Hand Tracking</h2>
         <p class="body-copy">
-          CLAY HANDS uses MediaPipe Hand Landmarker locally in your browser to track your palms, fingers, and pinches through your webcam. No video is recorded or uploaded anywhere.
+          CLAY HANDS is built for hands-first sculpting via Meta Quest WebXR Hand Tracking or local MediaPipe Webcam Hands. No video is recorded or uploaded anywhere.
         </p>
         ${
           hasError
@@ -917,16 +953,24 @@ export class UIManager {
             : ''
         }
         <div class="cta-row">
+          ${
+            hud.vrSupported
+              ? '<button class="btn btn-vr" id="btn-perm-vr">Enter Meta Quest VR (Hands)</button>'
+              : ''
+          }
           <button class="btn btn-primary" id="btn-allow-cam">
-            ${hasError ? 'Retry Webcam Access' : 'Allow Webcam & Continue'}
+            ${hasError ? 'Retry Hands Camera' : 'Allow Hands Camera & Continue'}
           </button>
-          <button class="btn btn-secondary" id="btn-fallback-mouse">Use Mouse & Keyboard Instead</button>
+          <button class="btn btn-ghost" id="btn-fallback-mouse">Mouse Fallback (After Hands)</button>
           <button class="btn btn-ghost" id="btn-perm-back">Back</button>
         </div>
       </div>
     `;
     this.root.appendChild(el);
 
+    el.querySelector('#btn-perm-vr')?.addEventListener('click', () =>
+      this.actions.onToggleVR()
+    );
     const allowBtn = el.querySelector('#btn-allow-cam') as HTMLButtonElement | null;
     allowBtn?.addEventListener('click', async () => {
       if (allowBtn) {
@@ -953,7 +997,7 @@ export class UIManager {
             <p class="eyebrow" id="cal-step-badge">Step 1 of 3 · Detect Hands</p>
             <h2>Calibrate Your Hands</h2>
           </div>
-          <button class="btn btn-ghost" id="btn-cal-mouse">Switch to Mouse</button>
+          <button class="btn btn-ghost" id="btn-cal-mouse">Mouse Fallback</button>
         </div>
         <div class="cal-preview-wrap">
           <canvas id="cal-canvas" width="360" height="240"></canvas>
@@ -1034,7 +1078,9 @@ export class UIManager {
             ${
               hud.inputMode === 'webcam'
                 ? `<button class="btn btn-small btn-secondary" id="hud-recal-btn">Recalibrate</button>`
-                : ''
+                : hud.inputMode === 'mouse'
+                  ? `<button class="btn btn-small btn-primary" id="hud-enable-hands-btn">Enable Hands</button>`
+                  : ''
             }
             ${
               hud.vrSupported
@@ -1047,6 +1093,8 @@ export class UIManager {
                 ? `<button class="btn btn-small ${hud.handCursorActive ? 'btn-hand-active' : 'btn-secondary'}" id="btn-hud-hand-cursor">${hud.handCursorActive ? 'Hand Cursor: ON' : 'Hand Cursor'}</button>`
                 : ''
             }
+            <button class="btn btn-small btn-secondary" id="hud-names-btn">Clay Names</button>
+            <button class="btn btn-small btn-secondary" id="hud-gallery-btn">Gallery</button>
             <button class="btn btn-small btn-secondary" id="hud-tutorial-btn">Gestures</button>
             <button class="btn btn-small btn-secondary" id="hud-settings-btn">Settings</button>
             <button class="btn btn-small btn-ghost" id="hud-exit-btn">Exit</button>
@@ -1213,11 +1261,20 @@ export class UIManager {
     el.querySelector('#hud-recal-btn')?.addEventListener('click', () =>
       this.actions.onRecalibrate()
     );
+    el.querySelector('#hud-enable-hands-btn')?.addEventListener('click', () =>
+      void this.actions.onRequestWebcam()
+    );
     el.querySelector('#hud-vr-btn')?.addEventListener('click', () =>
       this.actions.onToggleVR()
     );
     el.querySelector('#btn-hud-hand-cursor')?.addEventListener('click', () =>
       this.actions.onToggleHandCursor()
+    );
+    el.querySelector('#hud-names-btn')?.addEventListener('click', () =>
+      this.actions.onOpenNameStudio()
+    );
+    el.querySelector('#hud-gallery-btn')?.addEventListener('click', () =>
+      this.actions.onNavigate('gallery')
     );
     el.querySelector('#hud-tutorial-btn')?.addEventListener('click', () =>
       this.actions.onNavigate('tutorial')
@@ -1251,7 +1308,9 @@ export class UIManager {
     const el = document.createElement('div');
     el.className = 'studio-hud';
     const safeNameVal = hud.clayNameText.replace(/"/g, '&quot;');
+    const isBlank = hud.clayNameText.trim().length === 0;
     const presets = ['CLAY', 'LOVE', 'PEACE', 'HOME', 'STAR', 'SMILE'];
+    const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'.split('');
     const shapes: Array<[ClayNamePlaqueShape, string]> = [
       ['tablet', 'Tablet'],
       ['oval', 'Oval'],
@@ -1259,11 +1318,12 @@ export class UIManager {
       ['heart', 'Heart'],
     ];
     const tools: Array<[ClayNameTool, string]> = [
-      ['sculpt_puff', 'Raise Clay'],
-      ['sculpt_carve', 'Carve In'],
+      ['sculpt_write', 'Write Clay'],
+      ['sculpt_puff', 'Raise'],
+      ['sculpt_carve', 'Carve'],
       ['sculpt_smooth', 'Smooth'],
       ['stamp_heart', 'Stamp ♥'],
-      ['paint', 'Paint Brush'],
+      ['paint', 'Paint'],
     ];
 
     el.innerHTML = `
@@ -1275,15 +1335,17 @@ export class UIManager {
               hud.inputMode === 'webcam'
                 ? 'Webcam · Hands Ready'
                 : hud.inputMode === 'webxr'
-                  ? 'WebXR · Hands Ready'
-                  : 'Mouse & Hand Tools'
+                  ? hud.vrControllerMode
+                    ? 'WebXR · Controllers'
+                    : 'WebXR · Hands Ready'
+                  : 'Mouse Fallback'
             }</span>
           </div>
-          <h2 class="compact-title">3D Clay Nameplate</h2>
+          <h2 class="compact-title">${isBlank ? 'Hand-Write Clay Name' : '3D Clay Nameplate'}</h2>
           <p class="gesture-desc" id="hud-gesture-desc">${
             hud.inputMode === 'webcam' || hud.inputMode === 'webxr'
-              ? 'Point index finger & pinch plaque to sculpt/paint · Spread hands = Bolder · Raise hands = Deeper 3D.'
-              : 'Drag across the clay plaque to sculpt or paint · Switch to Webcam Hands anytime.'
+              ? 'Pinch thumb + index & draw directly on the clay to write your name, or use Pinch A–Z.'
+              : 'Mouse Fallback: drag clay plaque to sculpt, or click Enable Hands.'
           }</p>
         </div>
 
@@ -1297,9 +1359,11 @@ export class UIManager {
           }
           <div class="hud-quick-actions">
             ${
-              hud.inputMode !== 'webcam'
-                ? `<button class="btn btn-small btn-primary" id="btn-name-webcam">Use Hand Camera</button>`
-                : `<button class="btn btn-small btn-secondary" id="hud-recal-btn">Recalibrate</button>`
+              hud.inputMode === 'mouse'
+                ? `<button class="btn btn-small btn-primary" id="btn-name-webcam">Enable Hands</button>`
+                : hud.inputMode === 'webcam'
+                  ? `<button class="btn btn-small btn-secondary" id="hud-recal-btn">Recalibrate</button>`
+                  : ''
             }
             ${
               hud.vrSupported
@@ -1327,6 +1391,30 @@ export class UIManager {
           : ''
       }
 
+      ${
+        this.nameStampTrayOpen
+          ? `<aside class="name-stamp-rail" role="group" aria-label="Hand pinch letter stamps">
+               <div class="name-stamp-rail-head">
+                 <p class="rail-eyebrow">PINCH LETTERS</p>
+                 <button class="chip chip-compact" id="name-stamp-close">Close</button>
+               </div>
+               <div class="name-stamp-grid">
+                 ${alphabet
+                   .map(
+                     (ch) =>
+                       `<button class="chip name-letter-chip" data-stamp-char="${ch}">${ch}</button>`
+                   )
+                   .join('')}
+               </div>
+               <div class="name-stamp-actions">
+                 <button class="chip name-letter-chip name-letter-wide" data-stamp-char=" ">Space</button>
+                 <button class="chip name-letter-chip name-letter-wide" id="name-stamp-back">⌫</button>
+                 <button class="chip name-letter-chip name-letter-wide" id="name-stamp-clear">Blank</button>
+               </div>
+             </aside>`
+          : ''
+      }
+
       <div class="bottom-dock-wrap ${this.dockCollapsed ? 'dock-collapsed' : ''}">
         <button class="dock-toggle-btn" id="btn-toggle-dock">
           ${this.dockCollapsed ? '▴ Show Name Controls' : '▾ Hide Name Controls'}
@@ -1334,8 +1422,9 @@ export class UIManager {
         <div class="bottom-dock bottom-dock-names">
           <div class="name-dock-row">
             <div class="name-input-row">
-              <label class="dock-label" for="name-text-input">Name</label>
-              <input id="name-text-input" class="text-input name-word-input" type="text" maxlength="16" value="${safeNameVal}" placeholder="Type name..." />
+              <button class="chip ${isBlank ? 'chip-active' : ''}" id="name-blank-btn" title="Clear plaque to write your name freehand with your fingers">Blank & Write</button>
+              <button class="chip ${this.nameStampTrayOpen ? 'chip-active' : ''}" id="name-stamp-tray-btn" title="Pinch letters A–Z with your hand — no keyboard needed">Pinch A–Z</button>
+              <input id="name-text-input" class="text-input name-word-input" type="text" maxlength="16" value="${safeNameVal}" placeholder="Or type name..." aria-label="Clay name text" />
             </div>
             <div class="name-preset-chips">
               ${presets
@@ -1402,6 +1491,23 @@ export class UIManager {
       }
     });
 
+    el.querySelector('#name-blank-btn')?.addEventListener('click', () => {
+      this.actions.onBlankClayName();
+    });
+
+    const toggleStampTray = () => {
+      this.nameStampTrayOpen = !this.nameStampTrayOpen;
+      this.renderScreen(
+        this.currentScreen,
+        this.latestSettings ?? settings,
+        this.latestHUD ?? hud,
+        [],
+        null
+      );
+    };
+    el.querySelector('#name-stamp-tray-btn')?.addEventListener('click', toggleStampTray);
+    el.querySelector('#name-stamp-close')?.addEventListener('click', toggleStampTray);
+
     const nameInput = el.querySelector('#name-text-input') as HTMLInputElement | null;
     nameInput?.addEventListener('input', () => {
       this.actions.onSetClayNameText(nameInput.value);
@@ -1409,6 +1515,27 @@ export class UIManager {
         const w = (b as HTMLElement).dataset.nameWord ?? '';
         b.classList.toggle('chip-active', nameInput.value.trim().toUpperCase() === w);
       });
+    });
+
+    el.querySelectorAll('[data-stamp-char]').forEach((b) => {
+      b.addEventListener('click', () => {
+        const ch = (b as HTMLElement).dataset.stampChar ?? '';
+        const activeText = (this.latestHUD ?? hud).clayNameText;
+        const current = activeText === 'CLAY HANDS' ? '' : activeText;
+        const next = (current + ch).slice(0, 16);
+        this.actions.onSetClayNameText(next);
+      });
+    });
+
+    el.querySelector('#name-stamp-back')?.addEventListener('click', () => {
+      const activeText = (this.latestHUD ?? hud).clayNameText;
+      const current = activeText === 'CLAY HANDS' ? '' : activeText;
+      const next = current.slice(0, Math.max(0, current.length - 1));
+      this.actions.onSetClayNameText(next);
+    });
+
+    el.querySelector('#name-stamp-clear')?.addEventListener('click', () => {
+      this.actions.onBlankClayName();
     });
 
     el.querySelectorAll('[data-name-word]').forEach((b) => {
@@ -1649,7 +1776,7 @@ export class UIManager {
                   ? 'Webcam Practice'
                   : hud.inputMode === 'webxr'
                     ? 'WebXR Hands'
-                    : 'Mouse Practice'
+                    : 'Mouse Fallback'
               }
             </span>
           </div>
@@ -1662,7 +1789,9 @@ export class UIManager {
               <p class="eyebrow">PRACTICE ${stepIdx + 1} / ${total}</p>
               <h2 class="compact-title">${step.title}</h2>
               <p class="tut-cue-line">${
-                hud.inputMode === 'mouse' ? step.mouseCue : step.handCue
+                hud.inputMode === 'mouse'
+                  ? `${step.handCue} (Mouse Fallback: ${step.mouseCue})`
+                  : step.handCue
               }</p>
               <div class="tut-status-row">
                 <span id="tut-match-status" class="status-pill ${doneStep || hud.tutorialMatched ? 'status-ok' : 'status-warn'}">
@@ -1672,7 +1801,7 @@ export class UIManager {
                       : doneStep
                         ? 'Step complete!'
                         : hud.inputMode === 'mouse'
-                          ? step.mouseCue
+                          ? `${step.handCue} (Mouse Fallback: ${step.mouseCue})`
                           : step.handCue
                   }
                 </span>
@@ -1703,8 +1832,10 @@ export class UIManager {
           <div class="hud-quick-actions">
             ${
               hud.inputMode === 'mouse'
-                ? '<button class="btn btn-small btn-primary" id="btn-tut-webcam">Use Webcam Hands</button>'
-                : '<button class="btn btn-small btn-secondary" id="hud-recal-btn">Recalibrate</button>'
+                ? '<button class="btn btn-small btn-primary" id="btn-tut-webcam">Enable Hands</button>'
+                : hud.inputMode === 'webcam'
+                  ? '<button class="btn btn-small btn-secondary" id="hud-recal-btn">Recalibrate</button>'
+                  : ''
             }
             ${
               hud.vrSupported
@@ -1763,19 +1894,30 @@ export class UIManager {
     settings: StudioSettings,
     hud: StudioHUDState
   ): void {
-    const personality = hud.personality;
-    if (!this.customPotName && personality) {
+    const isName = hud.activeCreationKind === 'name';
+    const personality = isName ? null : hud.personality;
+    if (!isName && !this.customPotName && personality) {
       this.customPotName = personality.name;
     }
+
+    const creationTitle = isName
+      ? `${hud.clayNameText.trim() || 'Hand-Written Clay'} Nameplate`
+      : personality?.name ?? 'Studio Vessel';
 
     const initialDesc =
       hud.inputMode === 'webcam' || hud.inputMode === 'webxr'
         ? hud.glazePaintMode
-          ? 'Aim with your index finger — pinch thumb & index to brush paint.'
+          ? isName
+            ? 'Aim with your index finger — pinch thumb & index to brush paint your nameplate.'
+            : 'Aim with your index finger — pinch thumb & index to brush paint.'
           : 'Orbit View — drag to inspect, or switch to Paint Brush.'
         : hud.glazePaintMode
-          ? `${personality?.archetype ?? 'Handcrafted Vessel'} · Drag pot to brush paint · Drag background to rotate`
-          : `${personality?.archetype ?? 'Handcrafted Vessel'} · Drag anywhere to rotate and inspect`;
+          ? isName
+            ? 'Mouse Fallback: drag plaque to brush paint · Click Enable Hands for hand painting'
+            : `${personality?.archetype ?? 'Handcrafted Vessel'} · Mouse Fallback: drag pot to paint`
+          : isName
+            ? 'Mouse Fallback: drag anywhere to rotate and inspect'
+            : `${personality?.archetype ?? 'Handcrafted Vessel'} · Mouse Fallback: drag to inspect`;
 
     const el = document.createElement('div');
     el.className = 'studio-hud';
@@ -1789,23 +1931,30 @@ export class UIManager {
                 ? 'Webcam · Brush Ready'
                 : hud.inputMode === 'webxr'
                   ? 'WebXR · Brush Ready'
-                  : 'Mouse & Keyboard'
+                  : 'Mouse Fallback'
             }</span>
           </div>
-          <h2 class="compact-title">${personality?.name ?? 'Studio Vessel'}</h2>
+          <h2 class="compact-title">${creationTitle}</h2>
           <p class="gesture-desc" id="hud-gesture-desc">${initialDesc}</p>
           ${
-            personality
+            isName
               ? `<div class="spec-grid tabular">
-                   <span>Height: ${personality.measurements.heightCm} cm</span>
-                   <span>Width: ${personality.measurements.maxWidthCm} cm</span>
-                   <span>Neck: ${personality.measurements.neckWidthCm} cm</span>
-                   <span>Rim: ${personality.measurements.openingWidthCm} cm</span>
+                   <span>Width: 56 cm</span>
+                   <span>Height: 27 cm</span>
+                   <span>Shape: ${hud.clayNameShape}</span>
+                   <span>Relief: ${Math.round(hud.clayNameReliefMm)} mm</span>
                  </div>`
-              : ''
+              : personality
+                ? `<div class="spec-grid tabular">
+                     <span>Height: ${personality.measurements.heightCm} cm</span>
+                     <span>Width: ${personality.measurements.maxWidthCm} cm</span>
+                     <span>Neck: ${personality.measurements.neckWidthCm} cm</span>
+                     <span>Rim: ${personality.measurements.openingWidthCm} cm</span>
+                   </div>`
+                : ''
           }
           ${
-            hud.similarity && hud.mode === 'challenge'
+            !isName && hud.similarity && hud.mode === 'challenge'
               ? `<div class="guided-hint-box">Challenge Match: <strong>${hud.similarity.score}%</strong> — ${hud.similarity.proportionNote}</div>`
               : ''
           }
@@ -1822,7 +1971,9 @@ export class UIManager {
             ${
               hud.inputMode === 'webcam'
                 ? `<button class="btn btn-small btn-secondary" id="hud-recal-btn">Recalibrate</button>`
-                : ''
+                : hud.inputMode === 'mouse'
+                  ? `<button class="btn btn-small btn-primary" id="hud-enable-hands-btn">Enable Hands</button>`
+                  : ''
             }
             ${
               hud.vrSupported
@@ -1905,6 +2056,9 @@ export class UIManager {
     el.querySelector('#hud-recal-btn')?.addEventListener('click', () =>
       this.actions.onRecalibrate()
     );
+    el.querySelector('#hud-enable-hands-btn')?.addEventListener('click', () =>
+      void this.actions.onRequestWebcam()
+    );
     el.querySelectorAll('[data-glaze]').forEach((btn) => {
       btn.addEventListener('click', () => {
         const id = (btn as HTMLElement).dataset.glaze ?? 'ocean-blue';
@@ -1933,7 +2087,7 @@ export class UIManager {
     const done = hud.kilnFinished;
     const defaultName =
       hud.activeCreationKind === 'name'
-        ? `${hud.clayNameText.trim() || 'Clay'} Nameplate`
+        ? `${hud.clayNameText.trim() || 'Hand-Written Clay'} Nameplate`
         : this.customPotName || hud.personality?.name || 'Studio Vessel';
 
     el.innerHTML = `
@@ -2029,23 +2183,38 @@ export class UIManager {
     selectedId: string | null,
     hud: StudioHUDState
   ): void {
-    const selected = items.find((i) => i.id === selectedId) ?? items[0] ?? null;
+    const vesselCount = items.filter(
+      (i) => getCreationKind(i) === 'vessel'
+    ).length;
+    const nameCount = items.filter((i) => getCreationKind(i) === 'name').length;
     const smashMode = hud.gallerySmashMode;
     const smashScope = hud.gallerySmashScope;
+    const isRestoring = hud.galleryIsRestoring;
+    const filteredItems =
+      smashMode || isRestoring
+        ? items
+        : filterGalleryItems(items, this.galleryFilter);
+    const selected =
+      filteredItems.find((i) => i.id === selectedId) ??
+      filteredItems[0] ??
+      (smashMode || isRestoring
+        ? items.find((i) => i.id === selectedId) ?? items[0] ?? null
+        : null);
     const crackedCount = hud.galleryCrackedCount;
     const smashedCount = hud.gallerySmashedCount;
     const totalVessels = Math.max(1, hud.galleryTotalVessels || items.length);
-    const isRestoring = hud.galleryIsRestoring;
     const intactCount = Math.max(0, totalVessels - smashedCount);
     const hasDamage = smashedCount > 0 || crackedCount > 0;
     const smashAllDisabled =
       isRestoring ||
+      items.length === 0 ||
       (smashMode && smashScope === 'all' && intactCount === 0);
 
-    let subtitleText = 'Your fired vessels will be preserved here.';
+    let subtitleText =
+      'Your fired pottery vessels and 3D clay names live together here.';
     if (isRestoring) {
       subtitleText =
-        'Time Stone active — reversing time to restore cracked & shattered pottery!';
+        'Time Stone active — reversing time to restore cracked & shattered creations!';
     } else if (smashMode) {
       const targetSummary = hud.galleryFocusedName
         ? hud.galleryFocusedHits >= 1
@@ -2053,7 +2222,7 @@ export class UIManager {
           : `Target: ${hud.galleryFocusedName} (Intact 0/2 — Hit 1 cracks, Hit 2 shatters)`
         : smashedCount > 0 && intactCount === 0
           ? 'Shattered! Press Restore to rewind time, or Exit to delete.'
-          : 'Move hand, bat, or pointer onto any pot to focus.';
+          : 'Move Meta Quest hand/bat onto any piece to focus (pointer fallback).';
       const countsSummary = `${crackedCount} cracked · ${smashedCount}/${totalVessels} shattered`;
       subtitleText =
         smashedCount > 0
@@ -2061,10 +2230,13 @@ export class UIManager {
           : hasDamage
             ? `${targetSummary} · ${countsSummary} · Press Restore to rewind time!`
             : smashScope === 'single'
-              ? `${targetSummary} · Showing only selected pottery · Swipe, punch, or click!`
-              : `${targetSummary} · Showing all ${totalVessels} vessels · Swipe or hit Smash All!`;
+              ? `${targetSummary} · Showing selected piece · Swipe or pinch with hand (click fallback)!`
+              : `${targetSummary} · Showing all ${totalVessels} creations · Swipe by hand or hit Smash All!`;
     } else if (selected) {
-      subtitleText = `${GLAZE_CATALOG.find((g) => g.id === selected.glazeId)?.name ?? selected.glazeId} · ${selected.measurements.heightCm} cm × ${selected.measurements.maxWidthCm} cm · Drag scene to inspect`;
+      const glazeName =
+        GLAZE_CATALOG.find((g) => g.id === selected.glazeId)?.name ??
+        selected.glazeId;
+      subtitleText = `${formatGalleryItemMeta(selected, glazeName)} · Drag scene to inspect`;
     }
 
     const el = document.createElement('div');
@@ -2072,8 +2244,26 @@ export class UIManager {
     el.innerHTML = `
       <div class="hud-top-row">
         <div class="hud-corner-card ${isRestoring ? 'hud-card-timestorm' : ''}">
-          <p class="eyebrow">${isRestoring ? 'TIME REVERSAL' : smashMode ? (smashScope === 'single' ? 'SMASH BAT · SELECTED POTTERY' : 'SMASH ALL · 2 HITS TO BREAK') : `VILLAGE COLLECTION (${items.length})`}</p>
-          <h2 class="compact-title">${smashMode ? (hud.galleryFocusedName ? `Focus: ${hud.galleryFocusedName} (${hud.galleryFocusedHits}/2)` : smashScope === 'all' && totalVessels > 1 ? `All ${totalVessels} Vessels Spaced Safely` : selected?.name ?? 'Pottery Gallery') : selected ? selected.name : 'Pottery Gallery'}</h2>
+          <p class="eyebrow">${
+            isRestoring
+              ? 'TIME REVERSAL'
+              : smashMode
+                ? smashScope === 'single'
+                  ? 'SMASH BAT · SELECTED PIECE'
+                  : 'SMASH ALL · 2 HITS TO BREAK'
+                : `STUDIO GALLERY (${items.length}) · ${vesselCount} POTTERY · ${nameCount} CLAY NAMES`
+          }</p>
+          <h2 class="compact-title">${
+            smashMode
+              ? hud.galleryFocusedName
+                ? `Focus: ${hud.galleryFocusedName} (${hud.galleryFocusedHits}/2)`
+                : smashScope === 'all' && totalVessels > 1
+                  ? `All ${totalVessels} Creations Spaced Safely`
+                  : selected?.name ?? 'Studio Gallery'
+              : selected
+                ? selected.name
+                : 'Studio Gallery'
+          }</h2>
           <p class="gesture-desc">${subtitleText}</p>
         </div>
         <div class="hud-top-right">
@@ -2101,29 +2291,45 @@ export class UIManager {
         <div class="bottom-dock bottom-dock-gallery">
           ${
             items.length === 0
-              ? '<p class="empty-gallery-msg">No saved pottery yet. Shape and fire your first vessel in the studio!</p>'
-              : `<div class="gallery-strip">
-                   ${items
-                     .map((item) => {
-                       const glaze = GLAZE_CATALOG.find(
-                         (g) => g.id === item.glazeId
-                       );
-                       const active = selected?.id === item.id;
-                       return `
-                         <button class="gallery-chip ${active ? 'gallery-chip-active' : ''}" data-gal-id="${item.id}">
-                           <span class="swatch-dot" style="background: ${glaze?.color ?? '#b85d41'}"></span>
-                           <span class="gallery-chip-info">
-                             <strong>${item.name}</strong>
-                             <small>${new Date(item.createdAt).toLocaleDateString()}</small>
-                           </span>
-                         </button>
-                       `;
-                     })
-                     .join('')}
+              ? '<p class="empty-gallery-msg">No saved creations yet. Throw a vessel on the Pottery Wheel or craft a 3D Clay Name, then fire and save it here!</p>'
+              : `<div class="gallery-filter-row">
+                   <div class="gallery-filter-chips" role="tablist" aria-label="Filter Studio Gallery">
+                     <button class="chip ${this.galleryFilter === 'all' ? 'chip-active' : ''}" data-gal-filter="all" ${smashMode || isRestoring ? 'disabled' : ''}>All (${items.length})</button>
+                     <button class="chip ${this.galleryFilter === 'vessel' ? 'chip-active' : ''}" data-gal-filter="vessel" ${smashMode || isRestoring ? 'disabled' : ''}>Pottery Wheel (${vesselCount})</button>
+                     <button class="chip ${this.galleryFilter === 'name' ? 'chip-active' : ''}" data-gal-filter="name" ${smashMode || isRestoring ? 'disabled' : ''}>Clay Names (${nameCount})</button>
+                   </div>
                  </div>
+                 ${
+                   filteredItems.length === 0
+                     ? `<p class="empty-gallery-msg">No ${this.galleryFilter === 'name' ? '3D clay names' : 'pottery vessels'} saved yet. <button class="btn btn-small btn-secondary" id="btn-gal-show-all">Show All (${items.length})</button></p>`
+                     : `<div class="gallery-strip">
+                          ${filteredItems
+                            .map((item) => {
+                              const glaze = GLAZE_CATALOG.find(
+                                (g) => g.id === item.glazeId
+                              );
+                              const active = selected?.id === item.id;
+                              const kind = getCreationKind(item);
+                              return `
+                                <button class="gallery-chip ${active ? 'gallery-chip-active' : ''}" data-gal-id="${item.id}">
+                                  <span class="swatch-dot" style="background: ${glaze?.color ?? '#b85d41'}"></span>
+                                  <span class="gallery-chip-info">
+                                    <strong>${item.name}</strong>
+                                    <span class="gallery-chip-meta-row">
+                                      <span class="gallery-kind-badge ${kind === 'name' ? 'gallery-kind-name' : 'gallery-kind-vessel'}">${kind === 'name' ? 'Clay Name' : 'Pottery'}</span>
+                                      <small>${new Date(item.createdAt).toLocaleDateString()}</small>
+                                    </span>
+                                  </span>
+                                </button>
+                              `;
+                            })
+                            .join('')}
+                        </div>`
+                 }
                  ${
                    selected
                      ? `<div class="gallery-item-actions">
+                          <button class="btn btn-small btn-primary" id="btn-gal-edit" ${smashMode || isRestoring ? 'disabled' : ''}>Open in Studio</button>
                           <input id="gal-rename-input" class="text-input" type="text" maxlength="40" value="${selected.name}" ${smashMode ? 'disabled' : ''} />
                           <button class="btn btn-small btn-secondary" id="btn-gal-rename" ${smashMode ? 'disabled' : ''}>Rename</button>
                           <button class="btn btn-small btn-secondary" id="btn-gal-glb" ${smashMode ? 'disabled' : ''}>Export GLB</button>
@@ -2150,11 +2356,43 @@ export class UIManager {
     `;
     this.root.appendChild(el);
 
+    el.querySelectorAll('[data-gal-filter]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const nextFilter = (btn as HTMLElement).dataset.galFilter as
+          | GalleryFilter
+          | undefined;
+        if (!nextFilter) return;
+        this.galleryFilter = nextFilter;
+        const nextList = filterGalleryItems(items, nextFilter);
+        if (
+          nextList.length > 0 &&
+          !nextList.some((i) => i.id === selectedId)
+        ) {
+          this.actions.onSelectGalleryItem(nextList[0].id);
+        } else if (this.latestSettings) {
+          this.renderScreen('gallery', this.latestSettings, hud, items, selectedId);
+        }
+      });
+    });
+
+    el.querySelector('#btn-gal-show-all')?.addEventListener('click', () => {
+      this.galleryFilter = 'all';
+      if (items.length > 0 && !items.some((i) => i.id === selectedId)) {
+        this.actions.onSelectGalleryItem(items[0].id);
+      } else if (this.latestSettings) {
+        this.renderScreen('gallery', this.latestSettings, hud, items, selectedId);
+      }
+    });
+
     el.querySelectorAll('[data-gal-id]').forEach((btn) => {
       btn.addEventListener('click', () => {
         const id = (btn as HTMLElement).dataset.galId;
         if (id) this.actions.onSelectGalleryItem(id);
       });
+    });
+
+    el.querySelector('#btn-gal-edit')?.addEventListener('click', () => {
+      if (selected) this.actions.onLoadGalleryItem(selected.id);
     });
 
     el.querySelector('#btn-gal-rename')?.addEventListener('click', () => {
@@ -2286,6 +2524,11 @@ export class UIManager {
         </div>
 
         <div class="cta-row">
+          ${
+            hud.inputMode === 'mouse'
+              ? '<button class="btn btn-primary" id="btn-set-hands">Enable Hand Tracking</button>'
+              : ''
+          }
           <button class="btn btn-secondary" id="btn-set-recal">Recalibrate Hands</button>
           <button class="btn btn-secondary" id="btn-set-tut">Replay Tutorial</button>
         </div>
@@ -2373,6 +2616,9 @@ export class UIManager {
       el.querySelector('#set-hand-r')?.classList.remove('chip-active');
     });
 
+    el.querySelector('#btn-set-hands')?.addEventListener('click', () =>
+      void this.actions.onRequestWebcam()
+    );
     el.querySelector('#btn-set-recal')?.addEventListener('click', () =>
       this.actions.onRecalibrate()
     );

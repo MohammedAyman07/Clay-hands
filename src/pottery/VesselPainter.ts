@@ -389,6 +389,20 @@ export class VesselPainter {
     return exportCanvas.toDataURL('image/png');
   }
 
+  public loadPaintDataUrl(dataUrl?: string): void {
+    this.clear(false);
+    if (!dataUrl || !this.paintCtx || typeof Image === 'undefined') return;
+    const ctx = this.paintCtx;
+    const img = new Image();
+    img.onload = () => {
+      ctx.clearRect(0, 0, this.size, this.size);
+      ctx.drawImage(img, 0, 0, this.size, this.size);
+      this.hasPaint = this.detectAnyPaint();
+      this.recomposite();
+    };
+    img.src = dataUrl;
+  }
+
   public dispose(): void {
     this.compositeTexture.dispose();
     this.cursorGeos.forEach((g) => g.dispose());

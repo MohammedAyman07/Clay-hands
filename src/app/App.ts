@@ -1,7 +1,10 @@
 import * as THREE from 'three';
 import * as xb from 'xrblocks';
 import { AudioManager } from '../audio/AudioManager.ts';
-import { GalleryManager } from '../gallery/GalleryManager.ts';
+import {
+  GalleryManager,
+  getCreationKind,
+} from '../gallery/GalleryManager.ts';
 import { PotteryExporter } from '../gallery/PotteryExporter.ts';
 import { PotterySmashSystem } from '../gallery/PotterySmashSystem.ts';
 import { GLAZE_CATALOG, GlazeManager } from '../kiln/GlazeManager.ts';
@@ -70,7 +73,8 @@ const IDLE_GESTURE: GestureState = {
   isPinching: false,
   handsCount: 0,
   inZone: false,
-  description: 'Bring your hands into the shaping zone or drag the clay.',
+  description:
+    'Show your hands in the shaping zone (mouse drag is fallback only).',
 };
 
 export class ClayHandsApp extends xb.Script {
@@ -125,6 +129,9 @@ export class ClayHandsApp extends xb.Script {
   private isDraggingNamePlaque = false;
   private wasNameHandPinching = false;
   private wasVRNamePinching = false;
+  private smoothNameU = 0.5;
+  private smoothNameV = 0.5;
+  private hasSmoothNameUV = false;
   private mouseGallerySwinging = false;
   private handGalleryPinching = false;
   private vrBatTriggerHeld = false;
@@ -154,7 +161,7 @@ export class ClayHandsApp extends xb.Script {
   private latestFrame: HandTrackingFrame = {
     timestamp: 0,
     hands: [],
-    source: 'mouse',
+    source: 'webcam',
   };
   private latestCalProgress?: CalibrationProgress;
   private currentPersonality: PotteryPersonality | null = null;
@@ -274,7 +281,12 @@ export class ClayHandsApp extends xb.Script {
     this.vrPanel = new VRStudioPanel({
       onNavigate: (screen) => this.navigate(screen),
       onStartMode: (mode, lessonId, challengeId) =>
-        void this.startSession(mode, 'mouse', lessonId, challengeId),
+        void this.startSession(
+          mode,
+          this.xrManager.inXRSession ? 'webxr' : 'webcam',
+          lessonId,
+          challengeId
+        ),
       onStageSelect: (stage) => {
         this.sculpting.setStage(stage);
         this.showCelebration = false;
@@ -350,6 +362,7 @@ export class ClayHandsApp extends xb.Script {
       },
       onSaveToGallery: (name) => this.saveCurrentToGallery(name),
       onSelectGalleryItem: (id) => this.selectGalleryItem(id),
+      onLoadGalleryItem: (id) => this.loadGalleryItemToStudio(id),
       onDeleteGalleryItem: (id) => this.deleteGalleryItem(id),
       onToggleGallerySmash: () => this.toggleGallerySmash(),
       onSmashAllGallery: () => this.smashAllGallery(),
@@ -434,6 +447,7 @@ export class ClayHandsApp extends xb.Script {
       onExitVR: () => void this.xrManager.toggleVRSession(),
       onOpenNameStudio: () => this.openNameStudio(),
       onSetClayNameText: (text) => this.setClayNameText(text),
+      onBlankClayName: () => this.setBlankClayName(),
       onSetClayNameShape: (shape) => this.setClayNameShape(shape),
       onSetClayNameTool: (tool) => this.setClayNameTool(tool),
       onSetClayNameRelief: (meters) => this.setClayNameRelief(meters),
@@ -495,6 +509,7 @@ export class ClayHandsApp extends xb.Script {
         onStartKiln: () => this.startKilnSequence(),
         onSaveToGallery: (name) => this.saveCurrentToGallery(name),
         onSelectGalleryItem: (id) => this.selectGalleryItem(id),
+        onLoadGalleryItem: (id) => this.loadGalleryItemToStudio(id),
         onRenameGalleryItem: (id, name) => this.renameGalleryItem(id, name),
         onDeleteGalleryItem: (id) => this.deleteGalleryItem(id),
         onToggleGallerySmash: () => this.toggleGallerySmash(),
@@ -614,6 +629,7 @@ export class ClayHandsApp extends xb.Script {
         },
         onOpenNameStudio: (inputMode) => this.openNameStudio(inputMode),
         onSetClayNameText: (text) => this.setClayNameText(text),
+        onBlankClayName: () => this.setBlankClayName(),
         onSetClayNameShape: (shape) => this.setClayNameShape(shape),
         onSetClayNameTool: (tool) => this.setClayNameTool(tool),
         onSetClayNameRelief: (meters) => this.setClayNameRelief(meters),
@@ -631,6 +647,11 @@ export class ClayHandsApp extends xb.Script {
     window.addEventListener('beforeunload', this.onUnloadCommitSmash);
 
     await this.xrManager.probeSupport();
+    if (this.xrManager.inXRSession || this.xrManager.isMetaQuest()) {
+      this.state.inputMode = 'webxr';
+    } else {
+      this.state.inputMode = 'webcam';
+    }
     this.navigate('welcome');
     void this.tryAutoStartHandCursor();
   }
@@ -698,8 +719,13 @@ export class ClayHandsApp extends xb.Script {
         this.sculpting.stage !== 'finished') ||
       (this.state.screen === 'glaze' && this.glazePaintMode);
 
+    const handsTakePriority = () =>
+      this.xrManager.inXRSession ||
+      (this.state.inputMode === 'webcam' && this.latestFrame.hands.length > 0);
+
     canvas.addEventListener('pointerdown', (e) => {
       this.audio.unlock();
+      if (handsTakePriority()) return;
 
       // Bat smash swing in Gallery when Smash Mode is active
       if (
@@ -790,6 +816,7 @@ export class ClayHandsApp extends xb.Script {
     });
 
     window.addEventListener('pointermove', (e) => {
+      if (handsTakePriority()) return;
       if (this.state.screen === 'gallery' && this.smashSystem.isSmashMode()) {
         const rect = canvas.getBoundingClientRect();
         this.pointerNDC.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
@@ -1086,15 +1113,6 @@ export class ClayHandsApp extends xb.Script {
     };
     this.painter.setPinchPreview(evalRes.isPinching);
 
-    if (!evalRes.hand) {
-      if (this.handBrushActive) {
-        this.handBrushActive = false;
-        this.painter.endStroke();
-      }
-      this.painter.updateCursorPose(null, null);
-      return;
-    }
-
     if (usingWebXR) {
       const targetMesh = this.getActiveCreationMesh();
       // First check if either Meta Quest hand/controller ray is directly pointing at the clay mesh
@@ -1123,6 +1141,15 @@ export class ClayHandsApp extends xb.Script {
           this._worldNormal.set(0, 0, 1);
         }
         const shouldPaint = raySelecting || evalRes.isPinching;
+        this.currentGesture = {
+          ...IDLE_GESTURE,
+          handsCount: this.latestFrame.hands.length,
+          inZone: true,
+          isPinching: shouldPaint,
+          description: shouldPaint
+            ? 'Brushing mineral pigment in VR!'
+            : 'Aiming at clay — pinch or pull trigger to paint.',
+        };
         this.painter.setPinchPreview(shouldPaint);
         this.painter.updateCursorPose(rayHit.point, this._worldNormal);
 
@@ -1138,6 +1165,15 @@ export class ClayHandsApp extends xb.Script {
           this.handBrushActive = false;
           this.painter.endStroke();
         }
+        return;
+      }
+
+      if (!evalRes.hand) {
+        if (this.handBrushActive) {
+          this.handBrushActive = false;
+          this.painter.endStroke();
+        }
+        this.painter.updateCursorPose(null, null);
         return;
       }
 
@@ -1164,6 +1200,14 @@ export class ClayHandsApp extends xb.Script {
       this._handRayOrigin.addScaledVector(this._handRayDir, -0.18);
       this.raycaster.set(this._handRayOrigin, this._handRayDir);
     } else {
+      if (!evalRes.hand) {
+        if (this.handBrushActive) {
+          this.handBrushActive = false;
+          this.painter.endStroke();
+        }
+        this.painter.updateCursorPose(null, null);
+        return;
+      }
       this._handAimNDC.set(evalRes.aimNDC.x, evalRes.aimNDC.y);
       this.raycaster.setFromCamera(this._handAimNDC, xb.core.camera);
     }
@@ -1277,7 +1321,10 @@ export class ClayHandsApp extends xb.Script {
     if (screen === 'name-studio') {
       this.activeCreationKind = 'name';
       this.wheel.group.visible = false;
+      this.sculpting.clayMesh.visible = false;
+      this.sculpting.silhouetteGroup.visible = false;
       this.nameStationGroup.visible = true;
+      this.nameSculptor.nameMesh.visible = true;
       if (this.nameSculptor.nameMesh.parent !== this.nameSculptor.plaquePivot) {
         this.nameSculptor.plaquePivot.add(this.nameSculptor.nameMesh);
         this.nameSculptor.nameMesh.position.set(0, 0, 0);
@@ -1296,9 +1343,15 @@ export class ClayHandsApp extends xb.Script {
         screen === 'welcome' ||
         screen === 'start-studio'
       ) {
-        if (screen === 'studio' || screen === 'tutorial') {
-          this.activeCreationKind = 'vessel';
+        this.activeCreationKind = 'vessel';
+        if (this.nameSculptor.nameMesh.parent !== this.nameSculptor.plaquePivot) {
+          this.nameSculptor.plaquePivot.add(this.nameSculptor.nameMesh);
+          this.nameSculptor.nameMesh.position.set(0, 0, 0);
+          this.nameSculptor.nameMesh.rotation.set(0, 0, 0);
         }
+        this.nameSculptor.nameMesh.visible = false;
+        this.sculpting.clayMesh.visible = true;
+        this.sculpting.silhouetteGroup.visible = true;
         if (this.sculpting.clayMesh.parent !== this.wheel.clayMount) {
           this.wheel.clayMount.add(this.sculpting.clayMesh);
           this.sculpting.clayMesh.position.set(0, 0, 0);
@@ -1319,6 +1372,8 @@ export class ClayHandsApp extends xb.Script {
 
     if (screen === 'tutorial') {
       this.activeCreationKind = 'vessel';
+      this.sculpting.clayMesh.visible = true;
+      this.sculpting.silhouetteGroup.visible = true;
       this.sculpting.reset();
       this.painter.clear(false);
       this.painter.compositeTexture.wrapS = THREE.RepeatWrapping;
@@ -1340,21 +1395,48 @@ export class ClayHandsApp extends xb.Script {
     } else if (screen === 'glaze') {
       this.wheel.group.visible = true;
       if (this.activeCreationKind === 'name') {
+        this.sculpting.clayMesh.visible = false;
+        this.sculpting.silhouetteGroup.visible = false;
+        this.nameSculptor.nameMesh.visible = true;
         this.wheel.clayMount.add(this.nameSculptor.nameMesh);
         this.nameSculptor.nameMesh.position.set(0, 0.145, 0);
         this.nameSculptor.nameMesh.rotation.set(0, 0, 0);
-      } else if (this.sculpting.clayMesh.parent !== this.wheel.clayMount) {
-        this.wheel.clayMount.add(this.sculpting.clayMesh);
-        this.sculpting.clayMesh.position.set(0, 0, 0);
-        this.sculpting.clayMesh.rotation.set(0, 0, 0);
+      } else {
+        if (this.nameSculptor.nameMesh.parent !== this.nameSculptor.plaquePivot) {
+          this.nameSculptor.plaquePivot.add(this.nameSculptor.nameMesh);
+          this.nameSculptor.nameMesh.position.set(0, 0, 0);
+          this.nameSculptor.nameMesh.rotation.set(0, 0, 0);
+        }
+        this.nameSculptor.nameMesh.visible = false;
+        this.sculpting.clayMesh.visible = true;
+        this.sculpting.silhouetteGroup.visible = true;
+        if (this.sculpting.clayMesh.parent !== this.wheel.clayMount) {
+          this.wheel.clayMount.add(this.sculpting.clayMesh);
+          this.sculpting.clayMesh.position.set(0, 0, 0);
+          this.sculpting.clayMesh.rotation.set(0, 0, 0);
+        }
       }
       this.glazePaintMode = true;
       this.glazeSpinEnabled = false;
       this.sceneManager.setCameraPreset('glaze', true);
       this.applyPreviewGlaze();
     } else if (screen === 'kiln') {
+      if (this.activeCreationKind === 'name') {
+        this.sculpting.clayMesh.visible = false;
+        this.sculpting.silhouetteGroup.visible = false;
+        this.nameSculptor.nameMesh.visible = true;
+      } else {
+        this.nameSculptor.nameMesh.visible = false;
+        this.sculpting.clayMesh.visible = true;
+      }
       this.sceneManager.setCameraPreset('kiln', false);
     } else if (screen === 'gallery') {
+      if (this.nameSculptor.nameMesh.parent !== this.nameSculptor.plaquePivot) {
+        this.nameSculptor.plaquePivot.add(this.nameSculptor.nameMesh);
+        this.nameSculptor.nameMesh.position.set(0, 0, 0);
+        this.nameSculptor.nameMesh.rotation.set(0, 0, 0);
+      }
+      this.nameSculptor.nameMesh.visible = false;
       this.sceneManager.setCameraPreset('gallery', true);
       const items = this.gallery.getItems();
       const targetId = this.state.selectedGalleryItemId ?? items[0]?.id ?? null;
@@ -1390,7 +1472,7 @@ export class ClayHandsApp extends xb.Script {
     this.rerenderUI();
   }
 
-  private openNameStudio(inputMode?: InputMode): void {
+  private async openNameStudio(inputMode?: InputMode): Promise<void> {
     this.audio.unlock();
     const switchingFromVessel = this.activeCreationKind !== 'name';
     this.activeCreationKind = 'name';
@@ -1412,7 +1494,34 @@ export class ClayHandsApp extends xb.Script {
       return;
     }
 
-    if (inputMode === 'webcam') {
+    let resolvedMode: InputMode = inputMode ?? 'webcam';
+    if (
+      resolvedMode !== 'mouse' &&
+      this.xrManager.isMetaQuest() &&
+      this.xrManager.vrSupported &&
+      !this.xrManager.inXRSession
+    ) {
+      const enteredVR = await this.xrManager.toggleVRSession();
+      if (enteredVR) {
+        this.state.inputMode = 'webxr';
+        this.navigate('name-studio');
+        return;
+      }
+    }
+
+    if (resolvedMode === 'webxr') {
+      if (this.xrManager.vrSupported && !this.xrManager.inXRSession) {
+        const enteredVR = await this.xrManager.toggleVRSession();
+        if (enteredVR) {
+          this.state.inputMode = 'webxr';
+          this.navigate('name-studio');
+          return;
+        }
+      }
+      resolvedMode = 'webcam';
+    }
+
+    if (resolvedMode === 'webcam') {
       this.state.inputMode = 'webcam';
       this.postCalibrationScreen = 'name-studio';
       if (this.handTracker.isReady) {
@@ -1431,13 +1540,10 @@ export class ClayHandsApp extends xb.Script {
       return;
     }
 
-    if (inputMode === 'mouse') {
-      this.state.inputMode = 'mouse';
-      if (!this.handCursorActive) {
-        this.handTracker.stop();
-      }
+    this.state.inputMode = 'mouse';
+    if (!this.handCursorActive) {
+      this.handTracker.stop();
     }
-
     this.navigate('name-studio');
   }
 
@@ -1449,6 +1555,13 @@ export class ClayHandsApp extends xb.Script {
     if (!typingInDom) {
       this.rerenderUI();
     }
+  }
+
+  private setBlankClayName(): void {
+    this.nameSculptor.setBlankForHandWrite();
+    this.stopHandBrushSession();
+    this.audio.playCompressionPulse();
+    this.rerenderUI();
   }
 
   private setClayNameShape(shape: ClayNamePlaqueShape): void {
@@ -1508,7 +1621,7 @@ export class ClayHandsApp extends xb.Script {
       this.navigate('glaze');
       return;
     }
-    const label = this.nameSculptor.state.text.trim() || 'Clay Nameplate';
+    const label = this.nameSculptor.state.text.trim() || 'Hand-Written Clay';
     this.saveCurrentToGallery(label);
     this.navigate('gallery');
   }
@@ -1596,7 +1709,25 @@ export class ClayHandsApp extends xb.Script {
       return;
     }
 
-    if (inputMode === 'webcam') {
+    let resolvedMode: InputMode = inputMode;
+    if (
+      resolvedMode !== 'mouse' &&
+      (resolvedMode === 'webxr' || this.xrManager.isMetaQuest()) &&
+      this.xrManager.vrSupported &&
+      !this.xrManager.inXRSession
+    ) {
+      const enteredVR = await this.xrManager.toggleVRSession();
+      if (enteredVR) {
+        this.state.inputMode = 'webxr';
+        this.navigate('studio');
+        return;
+      }
+      resolvedMode = 'webcam';
+    } else if (resolvedMode === 'webxr') {
+      resolvedMode = 'webcam';
+    }
+
+    if (resolvedMode === 'webcam') {
       this.state.inputMode = 'webcam';
       this.postCalibrationScreen = 'studio';
       if (this.handTracker.isReady) {
@@ -1740,7 +1871,7 @@ export class ClayHandsApp extends xb.Script {
       const name =
         (customName ?? savedNameData.text).trim() ||
         savedNameData.text ||
-        'Clay Nameplate';
+        'Hand-Written Clay';
       const item: SavedPotteryItem = {
         id: `name_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
         name,
@@ -1779,7 +1910,7 @@ export class ClayHandsApp extends xb.Script {
         this.state.selectedGalleryItemId = item.id;
         this.saveStatus = {
           saved: true,
-          message: `"${name}" clay nameplate saved to your personal gallery.`,
+          message: `"${name}" clay nameplate saved to your Studio Gallery.`,
         };
       } else {
         this.saveStatus = {
@@ -1823,7 +1954,7 @@ export class ClayHandsApp extends xb.Script {
       this.state.selectedGalleryItemId = item.id;
       this.saveStatus = {
         saved: true,
-        message: `"${name}" saved to your personal pottery gallery.`,
+        message: `"${name}" saved to your Studio Gallery.`,
       };
     } else {
       this.saveStatus = {
@@ -1897,6 +2028,51 @@ export class ClayHandsApp extends xb.Script {
     const item = this.gallery.getItems().find((i) => i.id === id) ?? null;
     this.gallery.showItemOnPedestal(item);
     this.rerenderUI();
+  }
+
+  private loadGalleryItemToStudio(id: string): void {
+    if (this.smashSystem.isRestoring()) return;
+    if (this.smashSystem.isSmashMode()) {
+      this.commitUnrestoredSmashedVessels();
+      this.smashSystem.exitSmashMode();
+      this.mouseGallerySwinging = false;
+      this.sceneManager.setOrbitEnabled(true);
+    }
+
+    const item = this.gallery.getItems().find((i) => i.id === id);
+    if (!item) return;
+
+    this.state.selectedGalleryItemId = item.id;
+    this.state.selectedGlazeId = item.glazeId;
+    this.saveStatus = { saved: false, message: '' };
+    this.kilnFinished = false;
+    this.showCelebration = false;
+    this.showResetConfirm = false;
+    this.ui.showCelebration(false);
+    this.ui.showResetConfirmation(false);
+
+    if (getCreationKind(item) === 'name' && item.nameData) {
+      this.activeCreationKind = 'name';
+      this.nameSculptor.loadSavedNameData(item.nameData);
+      this.painter.compositeTexture.wrapS = THREE.ClampToEdgeWrapping;
+      this.painter.setBaseTexture(this.nameSculptor.wetClayTexture);
+      this.painter.loadPaintDataUrl(item.paintDataUrl);
+      this.navigate('name-studio');
+      return;
+    }
+
+    this.activeCreationKind = 'vessel';
+    this.state.mode = item.mode;
+    this.sculpting.reset();
+    this.sculpting.loadProfile(item.profile);
+    this.sculpting.setStage('shape');
+    this.sculpting.setChallengeSilhouette(null);
+    this.painter.compositeTexture.wrapS = THREE.RepeatWrapping;
+    this.painter.setBaseTexture(this.sculpting.wetClayTexture);
+    this.painter.loadPaintDataUrl(item.paintDataUrl);
+    this.currentPersonality = generatePotteryPersonality(this.sculpting.profile);
+    this.refreshSimilarity();
+    this.navigate('studio');
   }
 
   private renameGalleryItem(id: string, name: string): void {
@@ -2015,7 +2191,7 @@ export class ClayHandsApp extends xb.Script {
     } else {
       const name =
         this.activeCreationKind === 'name'
-          ? this.nameSculptor.state.text.trim() || 'clay-hands-name'
+          ? this.nameSculptor.state.text.trim() || 'hand-written-clay-name'
           : this.currentPersonality?.name ?? 'clay-hands-vessel';
       await this.exporter.exportGLB(this.getActiveCreationMesh(), name);
     }
@@ -2092,6 +2268,7 @@ export class ClayHandsApp extends xb.Script {
       saveStatus: this.saveStatus,
       vrSupported: this.xrManager.vrSupported,
       inVR: this.xrManager.inXRSession,
+      vrControllerMode: this.xrManager.controllerTrackingActive,
       vrMessage: this.xrManager.statusMessage,
       handCursorActive: this.handCursorActive && !this.shouldHideHandCursor(),
       showHandCursorControl: !this.shouldHideHandCursor(),
@@ -2132,6 +2309,11 @@ export class ClayHandsApp extends xb.Script {
   public onXRSessionStarted(): void {
     this.audio.unlock();
     this.xrManager.inXRSession = true;
+    (
+      xb.core?.renderer as
+        | (THREE.WebGLRenderer & { xr?: { setFoveation?: (v: number) => void } })
+        | undefined
+    )?.xr?.setFoveation?.(1);
     this.vrPanel.visible = true;
     this.handCursor.setEnabled(false);
     this.handCursor.hide();
@@ -2158,6 +2340,8 @@ export class ClayHandsApp extends xb.Script {
 
   public onXRSessionEnded(): void {
     this.xrManager.inXRSession = false;
+    this.xrManager.handTrackingActive = false;
+    this.xrManager.controllerTrackingActive = false;
     this.vrPanel.visible = false;
     if (
       this.handCursorActive &&
@@ -2204,6 +2388,7 @@ export class ClayHandsApp extends xb.Script {
     let usingWebXR = false;
 
     if (this.xrManager.inXRSession) {
+      usingWebXR = true;
       this.wheel.clayMount.getWorldPosition(this._wheelWorld);
       this.wheel.group.updateMatrixWorld();
       this._wheelInverse.copy(this.wheel.group.matrixWorld).invert();
@@ -2214,10 +2399,9 @@ export class ClayHandsApp extends xb.Script {
         this.wheel.wheelSurfaceY,
         this.sculpting.currentHeight
       );
-      if (xrSample && xrSample.frame.hands.length > 0) {
+      if (xrSample) {
         this.latestFrame = xrSample.frame;
         activeCal = xrSample.calibration;
-        usingWebXR = true;
       }
     }
 
@@ -2249,8 +2433,8 @@ export class ClayHandsApp extends xb.Script {
         ? this.latestFrame.hands.filter((h) => h.inInteractionZone).length
         : 0;
     const suppressCursorForSculpt =
-      activeSculptHands >= 2 ||
-      (this.state.screen === 'name-studio' && activeSculptHands >= 1);
+      (this.state.screen !== 'name-studio' && activeSculptHands >= 2) ||
+      (this.state.screen === 'name-studio' && this.wasNameHandPinching);
 
     // 2D hand cursor stays hidden on Meta Quest & XR sessions; active on desktop webcam menus
     const cursorStatus = this.handCursor.update(
@@ -2464,7 +2648,7 @@ export class ClayHandsApp extends xb.Script {
         this.currentGesture = {
           ...IDLE_GESTURE,
           description:
-            'Drag on the clay plaque to sculpt letters, or click Use Hand Camera.',
+            'Mouse Fallback active — drag plaque to sculpt, or click Enable Hands.',
         };
       }
 
@@ -2655,7 +2839,10 @@ export class ClayHandsApp extends xb.Script {
         gestureDesc:
           usingWebXR && this.latestFrame.hands.length > 0
             ? this.currentGesture.description
-            : 'Aim your Quest hand ray at any button & pinch to select.',
+            : this.xrManager.controllerTrackingActive
+              ? 'Aim your Quest controller ray & pull Trigger to sculpt or select.'
+              : 'Show hands or aim your Quest ray at any button & pinch to select.',
+        vrControllerMode: this.xrManager.controllerTrackingActive,
         handsCount: this.latestFrame.hands.length,
         similarity: this.currentSimilarity,
         personality: this.currentPersonality,
@@ -2812,7 +2999,9 @@ export class ClayHandsApp extends xb.Script {
             description:
               this.nameSculptor.activeTool === 'paint'
                 ? 'Painting clay letters in VR!'
-                : 'Sculpting clay nameplate in VR!',
+                : this.nameSculptor.activeTool === 'sculpt_write'
+                  ? 'Hand-writing raised clay strokes in VR!'
+                  : 'Sculpting clay nameplate in VR!',
           };
         } else {
           if (this.wasVRNamePinching) {
@@ -2829,7 +3018,9 @@ export class ClayHandsApp extends xb.Script {
             handsCount: hands.length,
             inZone: true,
             description:
-              'Aim at the clay plaque & pinch to sculpt, or use two hands to bolden letters.',
+              this.nameSculptor.activeTool === 'sculpt_write'
+                ? 'Aim & pinch across the plaque to hand-write your clay name!'
+                : 'Aim at the clay plaque & pinch to sculpt, or use two hands to bolden letters.',
           };
         }
       } else {
@@ -2849,6 +3040,7 @@ export class ClayHandsApp extends xb.Script {
 
     // Webcam MediaPipe easy plaque hand tracking
     if (!evalRes.hand) {
+      this.hasSmoothNameUV = false;
       if (this.wasNameHandPinching) {
         this.wasNameHandPinching = false;
         if (this.nameSculptor.activeTool === 'paint') {
@@ -2863,24 +3055,37 @@ export class ClayHandsApp extends xb.Script {
         ...IDLE_GESTURE,
         handsCount: hands.length,
         description:
-          'Show one hand to point & pinch plaque, or two hands to widen/raise letters.',
+          'Show one hand to point & pinch plaque, or move down to dock to pinch A–Z stamps.',
       };
       return;
     }
 
-    // Map primary index fingertip smoothly across entire plaque [0..1]²
+    // Map stabilized mirrored pinch point smoothly across entire plaque [0..1]²
+    const tipX = evalRes.hand.indexTip.x * 0.68 + evalRes.hand.thumbTip.x * 0.32;
+    const tipY = evalRes.hand.indexTip.y * 0.68 + evalRes.hand.thumbTip.y * 0.32;
     const spanX = Math.max(0.14, activeCal.maxSpan * 0.58);
     const spanY = Math.max(0.14, activeCal.maxY - activeCal.minY);
-    const normU = THREE.MathUtils.clamp(
-      0.5 + ((activeCal.centerX - evalRes.hand.indexTip.x) / spanX) * 0.5 * sens,
+    const rawU = THREE.MathUtils.clamp(
+      0.5 + ((tipX - activeCal.centerX) / spanX) * 0.5 * sens,
       0.03,
       0.97
     );
-    const normV = THREE.MathUtils.clamp(
-      1 - (evalRes.hand.indexTip.y - activeCal.minY) / spanY,
+    const rawV = THREE.MathUtils.clamp(
+      1 - (tipY - activeCal.minY) / spanY,
       0.05,
       0.95
     );
+    if (!this.hasSmoothNameUV) {
+      this.smoothNameU = rawU;
+      this.smoothNameV = rawV;
+      this.hasSmoothNameUV = true;
+    } else {
+      const alpha = THREE.MathUtils.clamp(dt * 18, 0.22, 0.65);
+      this.smoothNameU += (rawU - this.smoothNameU) * alpha;
+      this.smoothNameV += (rawV - this.smoothNameV) * alpha;
+    }
+    const normU = this.smoothNameU;
+    const normV = this.smoothNameV;
 
     const isPinching = evalRes.isPinching;
     this.nameSculptor.showCursorAtUV(true, normU, normV, isPinching);
@@ -2916,7 +3121,9 @@ export class ClayHandsApp extends xb.Script {
         description:
           this.nameSculptor.activeTool === 'paint'
             ? 'Pinch held — painting name plaque!'
-            : 'Pinch held — sculpting clay name plaque!',
+            : this.nameSculptor.activeTool === 'sculpt_write'
+              ? 'Pinch held — writing raised clay name!'
+              : 'Pinch held — sculpting clay name plaque!',
       };
     } else {
       if (this.wasNameHandPinching) {
@@ -2962,7 +3169,9 @@ export class ClayHandsApp extends xb.Script {
         description:
           this.nameSculptor.activeTool === 'paint'
             ? 'Move fingertip over letters & pinch to paint.'
-            : 'Move fingertip over plaque & pinch to sculpt, or use 2 hands to resize letters.',
+            : this.nameSculptor.activeTool === 'sculpt_write'
+              ? 'Pinch & move your hand over the plaque to write your clay name!'
+              : 'Move fingertip over plaque & pinch to sculpt, or use 2 hands to resize letters.',
       };
     }
   }

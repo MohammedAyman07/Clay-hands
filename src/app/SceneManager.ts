@@ -23,8 +23,8 @@ const PRESET_TARGETS: Record<
     target: new THREE.Vector3(0, 0.81, 0),
   },
   'name-studio': {
-    pos: new THREE.Vector3(0, 1.16, 0.86),
-    target: new THREE.Vector3(0, 0.90, 0.02),
+    pos: new THREE.Vector3(0, 1.11, 1.05),
+    target: new THREE.Vector3(0, 0.81, 0.03),
   },
   glaze: {
     pos: new THREE.Vector3(0.22, 1.03, 0.8),

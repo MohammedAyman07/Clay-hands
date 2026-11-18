@@ -132,7 +132,11 @@ export class ClaySculptingController {
       p.angularOffsets = [...saved.angularOffsets];
     }
     this.profile = p;
+    this.undoStack = [];
+    this.hasSubstantialEdits = true;
     this.clayGeometry.updateFromProfile(this.profile, 0);
+    this.syncWetnessVisual();
+    this.recomputeStage();
   }
 
   public setChallengeSilhouette(preset: ChallengePreset | null): void {

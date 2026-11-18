@@ -7,7 +7,10 @@ import type {
   Vec3,
 } from '../types.ts';
 
-import { isMetaQuestEnvironment } from './questEnvironment.ts';
+import {
+  isMetaQuestEnvironment,
+  mapControllerToWheelHand,
+} from './questEnvironment.ts';
 
 export { isMetaQuestEnvironment };
 
@@ -20,6 +23,7 @@ export class XRManager {
   public arSupported = false;
   public inXRSession = false;
   public handTrackingActive = false;
+  public controllerTrackingActive = false;
   public statusMessage = 'Checking WebXR support…';
 
   public isMetaQuest(): boolean {
@@ -107,8 +111,11 @@ export class XRManager {
     clayHeight: number
   ): { frame: HandTrackingFrame; calibration: CalibrationData } | null {
     const input = xb.core?.input;
-    const xrHands = xb.core?.user?.hands;
-    if (!this.inXRSession || !xrHands || !input?.hands) return null;
+    if (!this.inXRSession || !input) {
+      this.handTrackingActive = false;
+      this.controllerTrackingActive = false;
+      return null;
+    }
 
     const dtSec = this.prevTimestamp
       ? Math.max(0.016, (now - this.prevTimestamp) / 1000)
@@ -117,9 +124,10 @@ export class XRManager {
 
     const hands: SmoothedHand[] = [];
     const seen = new Set<'left' | 'right'>();
+    const xrHands = input.hands ?? [];
 
-    for (let i = 0; i < input.hands.length; i++) {
-      const handSpace = input.hands[i] as THREE.XRHandSpace & {
+    for (let i = 0; i < xrHands.length; i++) {
+      const handSpace = xrHands[i] as THREE.XRHandSpace & {
         inputSource?: XRInputSource;
       };
       if (!handSpace || !handSpace.visible || !handSpace.joints) continue;
@@ -267,6 +275,73 @@ export class XRManager {
     }
 
     this.handTrackingActive = hands.length > 0;
+
+    // Fallback: synthesize Wheel/Name hand entries from Meta Quest Touch controllers when bare hands aren't active
+    if (hands.length === 0 && input.controllers?.length) {
+      for (let i = 0; i < input.controllers.length; i++) {
+        const ctrl = input.controllers[i] as unknown as THREE.Object3D & {
+          userData?: { selected?: boolean; squeezed?: boolean };
+          inputSource?: XRInputSource;
+        };
+        if (!ctrl || ctrl.visible === false) continue;
+        ctrl.getWorldPosition(this._indexTip);
+        if (this._indexTip.lengthSq() < 1e-6) continue;
+
+        this._localPos
+          .copy(this._indexTip)
+          .applyMatrix4(stationaryWheelInverse);
+        this._localPos.y -= wheelSurfaceY;
+
+        const rawHandedness = ctrl.inputSource?.handedness;
+        const handId: 'left' | 'right' =
+          rawHandedness === 'left' || rawHandedness === 'right'
+            ? rawHandedness
+            : this._localPos.x < 0
+              ? 'left'
+              : 'right';
+        if (seen.has(handId)) continue;
+        seen.add(handId);
+
+        const prev = this.prevPalmPos.get(handId);
+        const velocity: Vec3 = prev
+          ? {
+              x: (this._localPos.x - prev.x) / dtSec,
+              y: (this._localPos.y - prev.y) / dtSec,
+              z: (this._localPos.z - prev.z) / dtSec,
+            }
+          : { x: 0, y: 0, z: 0 };
+
+        if (!prev) {
+          this.prevPalmPos.set(handId, this._localPos.clone());
+        } else {
+          prev.copy(this._localPos);
+        }
+
+        hands.push(
+          mapControllerToWheelHand({
+            handedness: handId,
+            localPos: {
+              x: this._localPos.x,
+              y: this._localPos.y,
+              z: this._localPos.z,
+            },
+            worldRelativeTip: {
+              x: this._indexTip.x - clayBaseWorld.x,
+              y: this._indexTip.y - clayBaseWorld.y,
+              z: this._indexTip.z - clayBaseWorld.z,
+            },
+            selected: Boolean(ctrl.userData?.selected),
+            squeezed: Boolean(ctrl.userData?.squeezed),
+            clayHeight,
+            velocity,
+          })
+        );
+      }
+      this.controllerTrackingActive = hands.length > 0;
+    } else {
+      this.controllerTrackingActive = false;
+    }
+
     const calibration: CalibrationData = {
       calibrated: true,
       centerX: 0.5,

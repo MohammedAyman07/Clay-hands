@@ -11,8 +11,52 @@ import {
   createInitialClayProfile,
   DEFAULT_ANGULAR_SEGMENTS,
 } from '../pottery/PotteryPresets.ts';
-import type { SavedPotteryItem } from '../types.ts';
+import type { GalleryFilter, SavedPotteryItem } from '../types.ts';
 import { PotteryStorage, type StorageResult } from './PotteryStorage.ts';
+
+/**
+ * Pure helper: normalizes legacy and current gallery items to 'vessel' | 'name'.
+ */
+export function getCreationKind(
+  item: Pick<SavedPotteryItem, 'kind' | 'nameData'>
+): 'vessel' | 'name' {
+  return item.kind === 'name' || Boolean(item.nameData) ? 'name' : 'vessel';
+}
+
+/**
+ * Pure helper: filters the unified gallery by 'all', 'vessel', or 'name'.
+ */
+export function filterGalleryItems(
+  items: SavedPotteryItem[],
+  filter: GalleryFilter
+): SavedPotteryItem[] {
+  if (filter === 'all') return items;
+  return items.filter((item) => getCreationKind(item) === filter);
+}
+
+/**
+ * Pure helper: formats display metadata consistently for both Pottery Wheel vessels and 3D Clay Names.
+ */
+export function formatGalleryItemMeta(
+  item: SavedPotteryItem,
+  glazeName?: string
+): string {
+  const glazeLabel = glazeName ?? item.glazeId;
+  if (getCreationKind(item) === 'name' && item.nameData) {
+    const shapeNames: Record<string, string> = {
+      tablet: 'Tablet',
+      oval: 'Oval',
+      ribbon: 'Banner',
+      heart: 'Heart',
+    };
+    const shapeLabel =
+      shapeNames[item.nameData.plaqueShape] ?? item.nameData.plaqueShape;
+    const reliefMm = Math.round(item.nameData.letterRelief * 1000);
+    const boldLabel = item.nameData.letterBoldness.toFixed(2);
+    return `${glazeLabel} · Clay Name · ${shapeLabel} · 56 × 27 cm · Relief ${reliefMm} mm · ${boldLabel}x`;
+  }
+  return `${glazeLabel} · Pottery Wheel · ${item.measurements.heightCm} cm × ${item.measurements.maxWidthCm} cm`;
+}
 
 export class GalleryManager {
   public readonly storage: PotteryStorage;

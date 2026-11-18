@@ -1,5 +1,10 @@
 import * as THREE from 'three';
 import * as xb from 'xrblocks';
+import {
+  filterGalleryItems,
+  formatGalleryItemMeta,
+  getCreationKind,
+} from '../gallery/GalleryManager.ts';
 import type { SmashScope } from '../gallery/PotterySmashSystem.ts';
 import { GLAZE_CATALOG } from '../kiln/GlazeManager.ts';
 import { CHALLENGE_PRESETS, GUIDED_LESSONS } from '../pottery/PotteryPresets.ts';
@@ -9,6 +14,7 @@ import type {
   BrushSizePreset,
   ClayNamePlaqueShape,
   ClayNameTool,
+  GalleryFilter,
   GameMode,
   GuidedLessonId,
   PotteryPersonality,
@@ -42,6 +48,7 @@ export interface VRStudioPanelActions {
   onContinueShaping: () => void;
   onSaveToGallery: (customName?: string) => void;
   onSelectGalleryItem: (id: string) => void;
+  onLoadGalleryItem: (id: string) => void;
   onDeleteGalleryItem: (id: string) => void;
   onToggleGallerySmash: () => void;
   onSmashAllGallery: () => void;
@@ -62,6 +69,7 @@ export interface VRStudioPanelActions {
   onExitVR: () => void;
   onOpenNameStudio: () => void;
   onSetClayNameText: (text: string) => void;
+  onBlankClayName: () => void;
   onSetClayNameShape: (shape: ClayNamePlaqueShape) => void;
   onSetClayNameTool: (tool: ClayNameTool) => void;
   onSetClayNameRelief: (meters: number) => void;
@@ -90,6 +98,7 @@ export interface VRPanelSyncState {
   glazeSpinEnabled: boolean;
   glazeId: string;
   gestureDesc: string;
+  vrControllerMode?: boolean;
   handsCount: number;
   similarity: SimilarityResult | null;
   personality: PotteryPersonality | null;
@@ -213,6 +222,11 @@ export class VRStudioPanel extends THREE.Group {
 
   // Name Studio Controls
   private readonly nameWordTitle: xb.UIText;
+  private readonly nameBlankBtn: xb.UIButton;
+  private readonly nameStampToggleBtn: xb.UIButton;
+  private readonly nameStampPanel: xb.UIPanel;
+  private nameStampOpen = false;
+  private latestClayNameText = 'CLAY HANDS';
   private readonly namePresetBtns = new Map<string, xb.UIButton>();
   private readonly nameShapeBtns = new Map<ClayNamePlaqueShape, xb.UIButton>();
   private readonly nameToolBtns = new Map<ClayNameTool, xb.UIButton>();
@@ -238,7 +252,9 @@ export class VRStudioPanel extends THREE.Group {
   private customKilnName = '';
 
   // Gallery Controls
+  private galleryFilter: GalleryFilter = 'all';
   private galleryPage = 0;
+  private readonly galleryFilterBtns = new Map<GalleryFilter, xb.UIButton>();
   private readonly galleryItemTitle: xb.UIText;
   private readonly galleryItemMeta: xb.UIText;
   private readonly gallerySlotBtns: xb.UIButton[] = [];
@@ -246,6 +262,7 @@ export class VRStudioPanel extends THREE.Group {
   private readonly galleryPageLabel: xb.UIText;
   private readonly galleryPrevPageBtn: xb.UIButton;
   private readonly galleryNextPageBtn: xb.UIButton;
+  private readonly galleryEditBtn: xb.UIButton;
   private readonly gallerySpinBtn: xb.UIButton;
   private readonly galleryRotLeftBtn: xb.UIButton;
   private readonly galleryRotRightBtn: xb.UIButton;
@@ -343,7 +360,7 @@ export class VRStudioPanel extends THREE.Group {
 
     // --- 2. WELCOME (HOME) PANEL ---
     this.welcomeGalleryBtn = new xb.UIButton({
-      label: 'Pottery Gallery (0)',
+      label: 'Studio Gallery (0)',
       icon: 'collections',
       style: { flexGrow: 1, fontSize: 15, padding: 10 },
       onClick: () => actions.onNavigate('gallery'),
@@ -992,6 +1009,67 @@ export class VRStudioPanel extends THREE.Group {
       text: 'Clay Name: "CLAY HANDS"',
       style: { fontSize: 17, fontWeight: 'bold' },
     });
+    this.nameBlankBtn = new xb.UIButton({
+      label: 'Blank & Write',
+      icon: 'edit',
+      style: { flexGrow: 1, fontSize: 12, padding: 6 },
+      onClick: () => actions.onBlankClayName(),
+    });
+    this.nameStampToggleBtn = new xb.UIButton({
+      label: 'Pinch A–Z',
+      icon: 'apps',
+      style: { flexGrow: 1, fontSize: 12, padding: 6 },
+      onClick: () => {
+        this.nameStampOpen = !this.nameStampOpen;
+        this.nameStampToggleBtn.style.backgroundColor = this.nameStampOpen
+          ? '#b84f33'
+          : undefined;
+        this.setShown(this.nameStampPanel, this.nameStampOpen);
+      },
+    });
+
+    const createStampRow = (chars: string[]) =>
+      new xb.UIPanel({
+        style: { width: '100%', flexDirection: 'row', gap: 3 },
+        children: chars.map((ch) =>
+          new xb.UIButton({
+            label: ch === ' ' ? 'Space' : ch,
+            style: {
+              flexGrow: ch.length > 1 || ch === ' ' ? 1.6 : 1,
+              fontSize: 11,
+              padding: 4,
+            },
+            onClick: () => {
+              if (ch === '⌫') {
+                const cur =
+                  this.latestClayNameText === 'CLAY HANDS'
+                    ? ''
+                    : this.latestClayNameText;
+                actions.onSetClayNameText(cur.slice(0, Math.max(0, cur.length - 1)));
+              } else if (ch === 'Blank') {
+                actions.onBlankClayName();
+              } else {
+                const cur =
+                  this.latestClayNameText === 'CLAY HANDS'
+                    ? ''
+                    : this.latestClayNameText;
+                actions.onSetClayNameText((cur + ch).slice(0, 16));
+              }
+            },
+          })
+        ),
+      });
+
+    this.nameStampPanel = new xb.UIPanel({
+      visible: false,
+      style: { display: 'none', width: '100%', flexDirection: 'column', gap: 3 },
+      children: [
+        createStampRow(['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J']),
+        createStampRow(['K', 'L', 'M', 'N', 'O', 'P', 'Q', 'R', 'S', 'T']),
+        createStampRow(['U', 'V', 'W', 'X', 'Y', 'Z', ' ', '⌫', 'Blank']),
+      ],
+    });
+
     const vrNameWords = ['CLAY', 'LOVE', 'PEACE', 'HOME', 'STAR', 'SMILE'];
     const nameWordRow = new xb.UIPanel({
       style: { width: '100%', flexDirection: 'row', gap: 4 },
@@ -1026,10 +1104,11 @@ export class VRStudioPanel extends THREE.Group {
     });
 
     const vrTools: Array<[ClayNameTool, string]> = [
+      ['sculpt_write', 'Write'],
       ['sculpt_puff', 'Raise'],
       ['sculpt_carve', 'Carve'],
       ['sculpt_smooth', 'Smooth'],
-      ['stamp_heart', 'Stamp ♥'],
+      ['stamp_heart', '♥'],
       ['paint', 'Paint'],
     ];
     const nameToolRow = new xb.UIPanel({
@@ -1037,7 +1116,7 @@ export class VRStudioPanel extends THREE.Group {
       children: vrTools.map(([tId, lbl]) => {
         const btn = new xb.UIButton({
           label: lbl,
-          style: { flexGrow: 1, fontSize: 12, padding: 6 },
+          style: { flexGrow: 1, fontSize: 11, padding: 6 },
           onClick: () => actions.onSetClayNameTool(tId),
         });
         this.nameToolBtns.set(tId, btn);
@@ -1088,13 +1167,18 @@ export class VRStudioPanel extends THREE.Group {
 
     const nameStudioPanel = new xb.UIPanel({
       visible: false,
-      style: { display: 'none', width: '100%', flexDirection: 'column', gap: 7 },
+      style: { display: 'none', width: '100%', flexDirection: 'column', gap: 6 },
       children: [
         this.nameWordTitle,
         new xb.UIText({
-          text: 'Pinch anywhere on the clay easel plaque with your hand to sculpt or paint!',
+          text: 'Pinch Blank & Write to draw your name directly on clay, or tap Pinch A–Z!',
           style: { fontSize: 12, opacity: 0.85 },
         }),
+        new xb.UIPanel({
+          style: { width: '100%', flexDirection: 'row', gap: 5 },
+          children: [this.nameBlankBtn, this.nameStampToggleBtn],
+        }),
+        this.nameStampPanel,
         nameWordRow,
         nameShapeRow,
         nameToolRow,
@@ -1266,12 +1350,40 @@ export class VRStudioPanel extends THREE.Group {
 
     // --- 9. GALLERY PANEL ---
     this.galleryItemTitle = new xb.UIText({
-      text: 'Pottery Gallery',
+      text: 'Studio Gallery',
       style: { fontSize: 18, fontWeight: 'bold' },
     });
     this.galleryItemMeta = new xb.UIText({
-      text: 'Your fired vessels appear on the pedestal.',
+      text: 'Your fired pottery vessels & 3D clay names appear here.',
       style: { fontSize: 13, opacity: 0.85 },
+    });
+
+    const filterEntries: Array<[GalleryFilter, string]> = [
+      ['all', 'All'],
+      ['vessel', 'Pottery'],
+      ['name', 'Names'],
+    ];
+    const galleryFilterRow = new xb.UIPanel({
+      style: { width: '100%', flexDirection: 'row', gap: 5 },
+      children: filterEntries.map(([fId, lbl]) => {
+        const btn = new xb.UIButton({
+          label: lbl,
+          style: { flexGrow: 1, fontSize: 12, padding: 6 },
+          onClick: () => {
+            this.galleryFilter = fId;
+            this.galleryPage = 0;
+            const filtered = filterGalleryItems(this.latestGalleryItems, fId);
+            if (
+              filtered.length > 0 &&
+              !filtered.some((i) => i.id === this.currentSelectedGalleryId)
+            ) {
+              actions.onSelectGalleryItem(filtered[0].id);
+            }
+          },
+        });
+        this.galleryFilterBtns.set(fId, btn);
+        return btn;
+      }),
     });
 
     for (let i = 0; i < GALLERY_PAGE_SIZE; i++) {
@@ -1310,6 +1422,16 @@ export class VRStudioPanel extends THREE.Group {
       },
     });
 
+    this.galleryEditBtn = new xb.UIButton({
+      label: 'Edit in Studio',
+      icon: 'edit',
+      style: { flexGrow: 1, fontSize: 13, padding: 7, backgroundColor: '#b84f33' },
+      onClick: () => {
+        const currentId =
+          this.currentSelectedGalleryId ?? this.gallerySlotIds.find(Boolean);
+        if (currentId) actions.onLoadGalleryItem(currentId);
+      },
+    });
     this.gallerySpinBtn = new xb.UIButton({
       label: 'Spin: On',
       icon: 'sync',
@@ -1317,12 +1439,12 @@ export class VRStudioPanel extends THREE.Group {
       onClick: () => actions.onToggleGallerySpin(),
     });
     this.galleryRotLeftBtn = new xb.UIButton({
-      label: 'Rotate -45°',
+      label: '-45°',
       style: { flexGrow: 1, fontSize: 13, padding: 7 },
       onClick: () => actions.onRotateGalleryVessel(-Math.PI / 4),
     });
     this.galleryRotRightBtn = new xb.UIButton({
-      label: 'Rotate +45°',
+      label: '+45°',
       style: { flexGrow: 1, fontSize: 13, padding: 7 },
       onClick: () => actions.onRotateGalleryVessel(Math.PI / 4),
     });
@@ -1366,7 +1488,6 @@ export class VRStudioPanel extends THREE.Group {
       icon: 'delete',
       style: { flexGrow: 1, fontSize: 13, padding: 7 },
       onClick: () => {
-        // Delete handled via currently active item in sync callback
         if (this.currentSelectedGalleryId) {
           actions.onDeleteGalleryItem(this.currentSelectedGalleryId);
         }
@@ -1379,6 +1500,7 @@ export class VRStudioPanel extends THREE.Group {
       children: [
         this.galleryItemTitle,
         this.galleryItemMeta,
+        galleryFilterRow,
         new xb.UIPanel({
           style: { width: '100%', flexDirection: 'row', gap: 5 },
           children: this.gallerySlotBtns,
@@ -1399,6 +1521,7 @@ export class VRStudioPanel extends THREE.Group {
         new xb.UIPanel({
           style: { width: '100%', flexDirection: 'row', gap: 5 },
           children: [
+            this.galleryEditBtn,
             this.gallerySpinBtn,
             this.galleryRotLeftBtn,
             this.galleryRotRightBtn,
@@ -1415,18 +1538,24 @@ export class VRStudioPanel extends THREE.Group {
           ],
         }),
         new xb.UIPanel({
-          style: { width: '100%', flexDirection: 'row', gap: 8 },
+          style: { width: '100%', flexDirection: 'row', gap: 6 },
           children: [
             new xb.UIButton({
               label: 'Create Pottery',
               icon: 'add_circle',
-              style: { flexGrow: 1, fontSize: 14, padding: 8 },
+              style: { flexGrow: 1, fontSize: 13, padding: 8 },
               onClick: () => actions.onNavigate('start-studio'),
+            }),
+            new xb.UIButton({
+              label: 'Clay Names',
+              icon: 'title',
+              style: { flexGrow: 1, fontSize: 13, padding: 8 },
+              onClick: () => actions.onOpenNameStudio(),
             }),
             new xb.UIButton({
               label: 'Home',
               icon: 'home',
-              style: { flexGrow: 1, fontSize: 14, padding: 8 },
+              style: { flexGrow: 1, fontSize: 13, padding: 8 },
               onClick: () => actions.onNavigate('welcome'),
             }),
           ],
@@ -1647,6 +1776,7 @@ export class VRStudioPanel extends THREE.Group {
   }
 
   private currentSelectedGalleryId: string | null = null;
+  private latestGalleryItems: SavedPotteryItem[] = [];
   private latestSoundEnabled = true;
   private latestReducedMotion = false;
   private latestHandedness: 'left' | 'right' = 'right';
@@ -1710,7 +1840,12 @@ export class VRStudioPanel extends THREE.Group {
     }
 
     // Header & status
-    this.headerTitle.text = `CLAY HANDS · ${state.handsCount} HAND${state.handsCount === 1 ? '' : 'S'} IN VR`;
+    const inputTag = state.vrControllerMode
+      ? 'CONTROLLERS IN VR'
+      : state.handsCount > 0
+        ? `${state.handsCount} HAND${state.handsCount === 1 ? '' : 'S'} IN VR`
+        : 'QUEST STUDIO READY';
+    this.headerTitle.text = `CLAY HANDS · ${inputTag}`;
     this.headerSubtitle.text = state.gestureDesc;
 
     // Highlight active nav tab
@@ -1727,7 +1862,7 @@ export class VRStudioPanel extends THREE.Group {
     }
 
     // Welcome counts
-    this.welcomeGalleryBtn.label = `Pottery Gallery (${state.galleryItems.length})`;
+    this.welcomeGalleryBtn.label = `Studio Gallery (${state.galleryItems.length})`;
 
     this.latestCreationKind = state.activeCreationKind;
 
@@ -1843,10 +1978,20 @@ export class VRStudioPanel extends THREE.Group {
 
     // Clay Names live state
     if (state.screen === 'name-studio') {
-      this.nameWordTitle.text = `Clay Name: "${state.clayNameText.trim() || 'CLAY HANDS'}"`;
+      this.latestClayNameText = state.clayNameText;
+      const trimmed = state.clayNameText.trim();
+      this.nameWordTitle.text = trimmed
+        ? `Clay Name: "${trimmed}"`
+        : 'Clay Name: Blank (Hand-Write)';
+      this.nameBlankBtn.style.backgroundColor =
+        trimmed === '' ? '#b84f33' : undefined;
+      this.nameStampToggleBtn.style.backgroundColor = this.nameStampOpen
+        ? '#b84f33'
+        : undefined;
+      this.setShown(this.nameStampPanel, this.nameStampOpen);
       for (const [word, btn] of this.namePresetBtns.entries()) {
         btn.style.backgroundColor =
-          state.clayNameText.trim().toUpperCase() === word ? '#b84f33' : undefined;
+          trimmed.toUpperCase() === word ? '#b84f33' : undefined;
       }
       for (const [sId, btn] of this.nameShapeBtns.entries()) {
         btn.style.backgroundColor =
@@ -1875,7 +2020,7 @@ export class VRStudioPanel extends THREE.Group {
         GLAZE_CATALOG.find((g) => g.id === state.glazeId) ?? GLAZE_CATALOG[0];
       const baseTitle =
         state.activeCreationKind === 'name'
-          ? `${state.clayNameText.trim() || 'Clay'} Nameplate`
+          ? `${state.clayNameText.trim() || 'Hand-Written Clay'} Nameplate`
           : state.personality?.name ?? 'Studio Vessel';
       this.glazeVesselTitle.text = `${baseTitle} · ${glaze.name} (${glaze.finishLabel})`;
       if (state.activeCreationKind === 'name') {
@@ -1915,7 +2060,7 @@ export class VRStudioPanel extends THREE.Group {
       if (state.kilnFinished) {
         const fallbackName =
           state.activeCreationKind === 'name'
-            ? `${state.clayNameText.trim() || 'Clay'} Nameplate`
+            ? `${state.clayNameText.trim() || 'Hand-Written Clay'} Nameplate`
             : state.personality?.name ?? 'Studio Vessel';
         this.kilnNameBtn.label = `Name: ${this.customKilnName || fallbackName}`;
         this.kilnSaveBtn.disabled = state.saveStatus.saved;
@@ -1930,30 +2075,72 @@ export class VRStudioPanel extends THREE.Group {
     // Gallery live state
     if (state.screen === 'gallery') {
       const items = state.galleryItems;
-      const totalPages = Math.max(1, Math.ceil(items.length / GALLERY_PAGE_SIZE));
+      this.latestGalleryItems = items;
+      const smashMode = state.gallerySmashMode;
+      const smashScope = state.gallerySmashScope;
+      const crackedCount = state.galleryCrackedCount;
+      const smashedCount = state.gallerySmashedCount;
+      const totalVessels = Math.max(1, state.galleryTotalVessels || items.length);
+      const isRestoring = state.galleryIsRestoring;
+      const intactInView = Math.max(0, totalVessels - smashedCount);
+      const hasDamage = smashedCount > 0 || crackedCount > 0;
+
+      const vesselCount = items.filter(
+        (i) => getCreationKind(i) === 'vessel'
+      ).length;
+      const nameCount = items.filter((i) => getCreationKind(i) === 'name').length;
+
+      for (const [fId, btn] of this.galleryFilterBtns.entries()) {
+        btn.label =
+          fId === 'all'
+            ? `All (${items.length})`
+            : fId === 'vessel'
+              ? `Pottery (${vesselCount})`
+              : `Names (${nameCount})`;
+        btn.style.backgroundColor =
+          this.galleryFilter === fId ? '#b84f33' : undefined;
+        btn.disabled = smashMode || isRestoring;
+      }
+
+      const visibleItems =
+        smashMode || isRestoring
+          ? items
+          : filterGalleryItems(items, this.galleryFilter);
+      const totalPages = Math.max(
+        1,
+        Math.ceil(visibleItems.length / GALLERY_PAGE_SIZE)
+      );
       this.galleryPage = Math.min(this.galleryPage, totalPages - 1);
       const selected =
-        items.find((i) => i.id === state.selectedGalleryId) ?? items[0] ?? null;
+        visibleItems.find((i) => i.id === state.selectedGalleryId) ??
+        visibleItems[0] ??
+        (smashMode || isRestoring
+          ? items.find((i) => i.id === state.selectedGalleryId) ?? items[0] ?? null
+          : null);
       this.currentSelectedGalleryId = selected?.id ?? null;
 
       if (selected) {
         const glaze = GLAZE_CATALOG.find((g) => g.id === selected.glazeId);
-        this.galleryItemTitle.text = `${selected.name} (${items.length} saved)`;
-        this.galleryItemMeta.text = `${glaze?.name ?? selected.glazeId} · ${selected.measurements.heightCm} cm × ${selected.measurements.maxWidthCm} cm`;
-      } else {
-        this.galleryItemTitle.text = 'Pottery Gallery (0)';
+        this.galleryItemTitle.text = `${selected.name} (${visibleItems.length}/${items.length} saved)`;
+        this.galleryItemMeta.text = formatGalleryItemMeta(selected, glaze?.name);
+      } else if (items.length === 0) {
+        this.galleryItemTitle.text = 'Studio Gallery (0)';
         this.galleryItemMeta.text =
-          'No saved vessels yet. Throw and fire a vessel to see it here!';
+          'No saved creations yet. Throw a vessel or sculpt a Clay Name and fire it!';
+      } else {
+        this.galleryItemTitle.text = `Studio Gallery (${items.length} saved)`;
+        this.galleryItemMeta.text = `No ${this.galleryFilter === 'name' ? '3D clay names' : 'pottery vessels'} in this filter yet.`;
       }
 
       const startIdx = this.galleryPage * GALLERY_PAGE_SIZE;
       for (let i = 0; i < GALLERY_PAGE_SIZE; i++) {
-        const item = items[startIdx + i] ?? null;
+        const item = visibleItems[startIdx + i] ?? null;
         const btn = this.gallerySlotBtns[i];
         this.gallerySlotIds[i] = item?.id ?? null;
         this.setShown(btn, Boolean(item));
         if (item) {
-          btn.label = item.name.slice(0, 14);
+          const tag = getCreationKind(item) === 'name' ? '[Name]' : '[Pot]';
+          btn.label = `${tag} ${item.name.slice(0, 11)}`;
           btn.style.backgroundColor =
             selected?.id === item.id ? '#b84f33' : undefined;
         }
@@ -1964,34 +2151,27 @@ export class VRStudioPanel extends THREE.Group {
       this.galleryNextPageBtn.disabled = this.galleryPage >= totalPages - 1;
 
       const hasSelected = Boolean(selected);
-      const smashMode = state.gallerySmashMode;
-      const smashScope = state.gallerySmashScope;
-      const crackedCount = state.galleryCrackedCount;
-      const smashedCount = state.gallerySmashedCount;
-      const totalVessels = Math.max(1, state.galleryTotalVessels || items.length);
-      const isRestoring = state.galleryIsRestoring;
-      const intactInView = Math.max(0, totalVessels - smashedCount);
-      const hasDamage = smashedCount > 0 || crackedCount > 0;
 
       if (isRestoring) {
         this.galleryItemMeta.text =
-          'Time Stone active — reversing cracks & shards back into pottery!';
+          'Time Stone active — reversing cracks & shards back into creations!';
       } else if (smashMode) {
         const focusLine = state.galleryFocusedName
           ? `Focus: ${state.galleryFocusedName} (${state.galleryFocusedHits}/2 hits)`
           : smashScope === 'single'
-            ? `Selected: ${selected?.name ?? 'Pottery'}`
-            : 'Aim Quest hand or controller at a pot';
+            ? `Selected: ${selected?.name ?? 'Piece'}`
+            : 'Aim Quest hand or controller at a piece';
         this.galleryItemMeta.text =
           smashedCount > 0
             ? `${focusLine} · ${crackedCount} cracked, ${smashedCount}/${totalVessels} broken · Restore or Exit (deletes broken)`
             : hasDamage
               ? `${focusLine} · ${crackedCount} cracked · Press Restore or hit again to break!`
               : smashScope === 'single'
-                ? `${focusLine} · Selected pot only · Hit 1 cracks, Hit 2 shatters!`
-                : `${focusLine} · All ${totalVessels} pots · Hit 1 cracks, Hit 2 shatters!`;
+                ? `${focusLine} · Selected piece only · Hit 1 cracks, Hit 2 shatters!`
+                : `${focusLine} · All ${totalVessels} pieces · Hit 1 cracks, Hit 2 shatters!`;
       }
 
+      this.galleryEditBtn.disabled = !hasSelected || smashMode || isRestoring;
       this.gallerySpinBtn.label = state.gallerySpinEnabled
         ? 'Spin: On'
         : 'Spin: Off';
@@ -2015,7 +2195,7 @@ export class VRStudioPanel extends THREE.Group {
 
       this.gallerySmashAllBtn.label = `Smash All (${items.length})`;
       this.gallerySmashAllBtn.disabled =
-        !hasSelected ||
+        items.length === 0 ||
         isRestoring ||
         (smashMode && smashScope === 'all' && intactInView === 0);
 

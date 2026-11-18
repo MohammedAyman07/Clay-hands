@@ -28,7 +28,7 @@ export class StateManager {
   public previousScreen: AppScreen = 'welcome';
   public modalReturnScreen: AppScreen = 'welcome';
   public mode: GameMode = 'free';
-  public inputMode: InputMode = 'mouse';
+  public inputMode: InputMode = 'webcam';
   public lessonId: GuidedLessonId = 'cup';
   public lessonStepIndex = 0;
   public challengePresetId = 'tapered-vase';

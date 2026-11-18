@@ -1040,7 +1040,22 @@ h2 {
 /* Gallery */
 .bottom-dock-gallery {
   flex-direction: column;
-  width: min(860px, 92vw);
+  width: min(880px, 94vw);
+  gap: 8px;
+}
+
+.gallery-filter-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.gallery-filter-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
 }
 
 .gallery-strip {
@@ -1076,6 +1091,35 @@ h2 {
   flex-direction: column;
   text-align: left;
   font-size: 0.78rem;
+  gap: 1px;
+}
+
+.gallery-chip-meta-row {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.gallery-kind-badge {
+  display: inline-block;
+  padding: 1px 5px;
+  border-radius: 999px;
+  font-size: 0.62rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.gallery-kind-vessel {
+  background: var(--terracotta-soft);
+  color: var(--terracotta);
+  border: 1px solid rgba(184, 79, 51, 0.35);
+}
+
+.gallery-kind-name {
+  background: var(--sage-soft);
+  color: var(--sage);
+  border: 1px solid rgba(77, 109, 67, 0.35);
 }
 
 .gallery-chip-info small {
@@ -1480,27 +1524,35 @@ input[type='checkbox'] {
 .bottom-dock-names {
   flex-direction: column;
   align-items: stretch;
-  gap: 8px;
-  max-width: min(1040px, 96vw);
-  padding: 10px 14px;
+  gap: 6px;
+  max-width: min(1160px, 97vw);
+  padding: 7px 12px;
 }
 
 .name-dock-row {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  justify-content: space-between;
-  gap: 8px 12px;
+  justify-content: center;
+  gap: 5px 10px;
+}
+
+.bottom-dock-names .chip {
+  padding: 4px 8px;
+  font-size: 0.72rem;
 }
 
 .name-input-row {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 5px;
 }
 
 .name-word-input {
-  width: 148px;
+  width: 124px;
+  min-width: 112px;
+  padding: 5px 9px;
+  font-size: 0.78rem;
   font-weight: 700;
   letter-spacing: 0.04em;
   text-transform: uppercase;
@@ -1511,7 +1563,66 @@ input[type='checkbox'] {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
+  gap: 4px;
+}
+
+.name-stamp-rail {
+  pointer-events: auto;
+  position: fixed;
+  right: 16px;
+  bottom: 118px;
+  width: 262px;
+  max-height: calc(100vh - 330px);
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  padding: 9px 11px;
+  border-radius: 14px;
+  background: var(--parchment);
+  border: 2px solid var(--timber-border);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 252, 245, 0.8),
+    0 12px 26px rgba(42, 24, 12, 0.22);
+}
+
+.name-stamp-rail-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.chip-compact {
+  padding: 3px 8px;
+  font-size: 0.7rem;
+}
+
+.name-stamp-grid {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  gap: 4px;
+}
+
+.name-stamp-actions {
+  display: flex;
   gap: 5px;
+}
+
+.name-letter-chip {
+  min-width: 0;
+  height: 29px;
+  padding: 0 4px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 700;
+  font-size: 0.78rem;
+}
+
+.name-letter-wide {
+  flex: 1 1 0;
+  padding: 0 8px;
 }
 
 @media (max-width: 720px) {
@@ -1520,9 +1631,18 @@ input[type='checkbox'] {
     align-items: stretch;
   }
   .bottom-dock-names {
-    padding: 8px 10px;
+    padding: 7px 9px;
   }
   .name-word-input {
-    width: 124px;
+    width: 110px;
+  }
+  .name-stamp-rail {
+    right: 10px;
+    bottom: 130px;
+    width: 230px;
+  }
+  .name-letter-chip {
+    height: 27px;
+    font-size: 0.74rem;
   }
 }

@@ -18,6 +18,24 @@ import {
 
 const MAX_UNDO_STEPS = 20;
 
+function distToSegment2D(
+  px: number,
+  py: number,
+  ax: number,
+  ay: number,
+  bx: number,
+  by: number
+): number {
+  const abx = bx - ax;
+  const aby = by - ay;
+  const lenSq = abx * abx + aby * aby;
+  if (lenSq < 1e-10) {
+    return Math.hypot(px - ax, py - ay);
+  }
+  const t = Math.max(0, Math.min(1, ((px - ax) * abx + (py - ay) * aby) / lenSq));
+  return Math.hypot(px - (ax + abx * t), py - (ay + aby * t));
+}
+
 export class ClayNameSculptor {
   public readonly group = new THREE.Group();
   public readonly easelGroup = new THREE.Group();
@@ -35,16 +53,18 @@ export class ClayNameSculptor {
   private readonly cursorRingMat: THREE.MeshBasicMaterial;
   private readonly cursorTipMat: THREE.MeshStandardMaterial;
 
-  public activeTool: ClayNameTool = 'sculpt_puff';
+  public activeTool: ClayNameTool = 'sculpt_write';
   public brushRadiusNorm = 0.085;
 
   private undoStack: Array<{
+    text: string;
     sculptDeltas: Float32Array;
     letterRelief: number;
     letterBoldness: number;
     plaqueShape: ClayNamePlaqueShape;
   }> = [];
   private isStrokeActive = false;
+  private lastStrokeUV: { u: number; v: number } | null = null;
 
   private readonly geometries: THREE.BufferGeometry[] = [];
   private readonly materials: THREE.Material[] = [];
@@ -278,6 +298,7 @@ export class ClayNameSculptor {
 
   private pushUndoSnapshot(): void {
     this.undoStack.push({
+      text: this.state.text,
       sculptDeltas: new Float32Array(this.state.sculptDeltas),
       letterRelief: this.state.letterRelief,
       letterBoldness: this.state.letterBoldness,
@@ -292,6 +313,14 @@ export class ClayNameSculptor {
     const clean = text.slice(0, 16);
     if (clean === this.state.text) return;
     this.state.text = clean;
+    this.clayGeometry.updateFromState(this.state);
+  }
+
+  public setBlankForHandWrite(): void {
+    this.pushUndoSnapshot();
+    this.state.text = '';
+    this.state.sculptDeltas.fill(0);
+    this.setTool('sculpt_write');
     this.clayGeometry.updateFromState(this.state);
   }
 
@@ -319,6 +348,7 @@ export class ClayNameSculptor {
   public setTool(tool: ClayNameTool): void {
     this.activeTool = tool;
     const toolColors: Record<ClayNameTool, number> = {
+      sculpt_write: 0xf6d37b,
       sculpt_puff: 0xffc66e,
       sculpt_carve: 0xf27d59,
       sculpt_smooth: 0x8ad6b4,
@@ -333,16 +363,18 @@ export class ClayNameSculptor {
   public beginStroke(): void {
     if (this.isStrokeActive) return;
     this.isStrokeActive = true;
+    this.lastStrokeUV = null;
     this.pushUndoSnapshot();
   }
 
   public endStroke(): void {
     this.isStrokeActive = false;
+    this.lastStrokeUV = null;
   }
 
   /**
    * Sculpt clay heightfield at normalized UV coordinates (u in [0..1], v in [0..1] bottom->top).
-   * Works smoothly for hand tracking pinch, stylus touch, or mouse dragging.
+   * Interpolates strokes continuously between frames so hand-writing names never skips or dots.
    */
   public applyBrushAtUV(
     u: number,
@@ -354,13 +386,33 @@ export class ClayNameSculptor {
     if (tool === 'paint') return false;
     const { cols, rows, sculptDeltas } = this.state;
 
-    // Target XY in plaque local coordinates
+    const prevUV = this.isStrokeActive && this.lastStrokeUV ? this.lastStrokeUV : { u, v };
+    const prevX = (prevUV.u - 0.5) * NAME_PLAQUE_WIDTH;
+    const prevY = (prevUV.v - 0.5) * NAME_PLAQUE_HEIGHT;
     const targetX = (u - 0.5) * NAME_PLAQUE_WIDTH;
     const targetY = (v - 0.5) * NAME_PLAQUE_HEIGHT;
-    const radiusM = Math.max(
-      0.018,
-      this.brushRadiusNorm * NAME_PLAQUE_WIDTH * (tool === 'stamp_heart' ? 1.15 : 0.72)
-    );
+
+    const radiusM =
+      tool === 'sculpt_write'
+        ? Math.max(
+            0.013,
+            0.021 * (0.72 + 0.28 * this.state.letterBoldness)
+          )
+        : Math.max(
+            0.018,
+            this.brushRadiusNorm *
+              NAME_PLAQUE_WIDTH *
+              (tool === 'stamp_heart' ? 1.15 : 0.72)
+          );
+
+    const useSegment =
+      tool === 'sculpt_write' ||
+      tool === 'sculpt_puff' ||
+      tool === 'sculpt_carve';
+    const minX = Math.min(prevX, targetX) - radiusM;
+    const maxX = Math.max(prevX, targetX) + radiusM;
+    const minY = Math.min(prevY, targetY) - radiusM;
+    const maxY = Math.max(prevY, targetY) + radiusM;
 
     const prevDeltas = tool === 'sculpt_smooth' ? new Float32Array(sculptDeltas) : null;
     let modified = false;
@@ -378,15 +430,34 @@ export class ClayNameSculptor {
           NAME_PLAQUE_HEIGHT
         );
 
+        if (x < minX || x > maxX || y < minY || y > maxY) continue;
+
         const dx = x - targetX;
         const dy = y - targetY;
-        const dist = Math.hypot(dx, dy);
+        const dist = useSegment
+          ? distToSegment2D(x, y, prevX, prevY, targetX, targetY)
+          : Math.hypot(dx, dy);
         if (dist > radiusM) continue;
 
-        const falloff = Math.cos((dist / radiusM) * Math.PI * 0.5);
+        const ratio = dist / radiusM;
+        const falloff = Math.cos(ratio * Math.PI * 0.5);
         const w = falloff * falloff;
 
-        if (tool === 'sculpt_puff') {
+        if (tool === 'sculpt_write') {
+          const dome = Math.sqrt(Math.max(0, 1 - ratio * ratio));
+          const coilPeak =
+            Math.max(0.014, this.state.letterRelief * 0.88) *
+            THREE.MathUtils.clamp(strength, 0.72, 1.12);
+          const targetH = dome * coilPeak;
+          if (sculptDeltas[idx] < targetH) {
+            // Reach crisp coil height immediately on finger pass so fast writing stays solid
+            sculptDeltas[idx] = Math.min(
+              0.036,
+              THREE.MathUtils.lerp(sculptDeltas[idx], targetH, 0.86)
+            );
+            modified = true;
+          }
+        } else if (tool === 'sculpt_puff') {
           sculptDeltas[idx] = THREE.MathUtils.clamp(
             sculptDeltas[idx] + w * strength * 0.036 * dt,
             -0.01,
@@ -429,6 +500,10 @@ export class ClayNameSculptor {
           }
         }
       }
+    }
+
+    if (this.isStrokeActive) {
+      this.lastStrokeUV = { u, v };
     }
 
     if (modified) {
@@ -539,6 +614,7 @@ export class ClayNameSculptor {
   public undo(): boolean {
     const snap = this.undoStack.pop();
     if (!snap) return false;
+    this.state.text = snap.text;
     this.state.sculptDeltas.set(snap.sculptDeltas);
     this.state.letterRelief = snap.letterRelief;
     this.state.letterBoldness = snap.letterBoldness;
@@ -561,7 +637,7 @@ export class ClayNameSculptor {
 
   public exportSavedNameData(): SavedClayNameData {
     return {
-      text: this.state.text.trim() || 'CLAY HANDS',
+      text: this.state.text.trim().slice(0, 16),
       plaqueShape: this.state.plaqueShape,
       letterRelief: Number(this.state.letterRelief.toFixed(4)),
       letterBoldness: Number(this.state.letterBoldness.toFixed(3)),

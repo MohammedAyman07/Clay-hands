@@ -152,6 +152,7 @@ export interface BrushColorDefinition {
 export type BrushSizePreset = 'fine' | 'medium' | 'broad';
 
 export type ClayNameTool =
+  | 'sculpt_write'
   | 'sculpt_puff'
   | 'sculpt_carve'
   | 'sculpt_smooth'
@@ -169,6 +170,8 @@ export interface SavedClayNameData {
   rows: number;
   sculptDeltas: number[];
 }
+
+export type GalleryFilter = 'all' | 'vessel' | 'name';
 
 export interface SavedPotteryItem {
   id: string;

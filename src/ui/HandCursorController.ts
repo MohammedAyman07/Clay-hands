@@ -18,6 +18,7 @@ const HUD_CONTAINER_SELECTOR = [
   '.bottom-dock',
   '.dock-toggle-btn',
   '.brush-side-rail',
+  '.name-stamp-rail',
   '.tut-step-dots',
   '.tut-card-foot',
   '.celebration-banner',

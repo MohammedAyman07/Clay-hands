@@ -905,4 +905,215 @@ test('ClayNameGeometry & ClayNameSculptor support 3D embossed lettering, plaque 
   sculptor.dispose();
 });
 
+test('ClayNameGeometry & ClayNameSculptor support blank hand-write slab, continuous sculpt_write strokes, and undo', async () => {
+  const {
+    ClayNameGeometry,
+    createInitialClayNameState,
+    generateLetterMask,
+  } = await import('../src/names/ClayNameGeometry.ts');
+  const { ClayNameSculptor } = await import('../src/names/ClayNameSculptor.ts');
+
+  const cols = 72;
+  const rows = 36;
+  const blankMask = generateLetterMask('', cols, rows);
+  assert.equal(blankMask.length, cols * rows);
+  let litCount = 0;
+  for (let i = 0; i < blankMask.length; i++) {
+    if (blankMask[i] > 0) litCount++;
+  }
+  assert.equal(litCount, 0, 'Blank text must produce an all-zero letter mask');
+
+  const geo = new ClayNameGeometry(cols, rows);
+  const blankState = createInitialClayNameState('', 'tablet', cols, rows);
+  geo.updateFromState(blankState);
+  for (let i = 0; i < geo.baseLetterHeight.length; i++) {
+    assert.equal(geo.baseLetterHeight[i], 0);
+  }
+  const pos = geo.geometry.attributes.position;
+  for (let i = 0; i < pos.count * 3; i++) {
+    assert.ok(Number.isFinite(pos.array[i]));
+  }
+  geo.dispose();
+
+  const sculptor = new ClayNameSculptor();
+  sculptor.setNameText('ARIA');
+  sculptor.setBlankForHandWrite();
+  assert.equal(sculptor.state.text, '');
+  assert.equal(sculptor.activeTool, 'sculpt_write');
+  assert.equal(sculptor.canUndo, true);
+
+  // Continuous stroke across spaced UV coordinates must fill intermediate clay cells
+  sculptor.beginStroke();
+  sculptor.applyBrushAtUV(0.25, 0.5, 'sculpt_write', 1.0, 0.04);
+  sculptor.applyBrushAtUV(0.45, 0.5, 'sculpt_write', 1.0, 0.04);
+  sculptor.endStroke();
+
+  const midRow = Math.floor(sculptor.state.rows * 0.5);
+  const midCol = Math.floor(sculptor.state.cols * 0.35);
+  const midIdx = midRow * sculptor.state.cols + midCol;
+  assert.ok(
+    sculptor.state.sculptDeltas[midIdx] > 0.004,
+    'Continuous sculpt_write stroke must raise clay along intermediate segment'
+  );
+
+  const savedBlank = sculptor.exportSavedNameData();
+  assert.equal(savedBlank.text, '');
+  assert.ok(savedBlank.sculptDeltas[midIdx] > 0.004);
+
+  // First undo reverts the hand-written stroke; second undo restores 'ARIA'
+  assert.equal(sculptor.undo(), true);
+  assert.ok(Math.abs(sculptor.state.sculptDeltas[midIdx]) < 1e-6);
+  assert.equal(sculptor.undo(), true);
+  assert.equal(sculptor.state.text, 'ARIA');
+
+  sculptor.dispose();
+});
+
+test('Meta Quest controller fallback mapping and unified Studio Gallery filtering/reload round-trip', async () => {
+  const { mapControllerToWheelHand } = await import('../src/xr/questEnvironment.ts');
+  const {
+    filterGalleryItems,
+    formatGalleryItemMeta,
+    getCreationKind,
+  } = await import('../src/gallery/GalleryManager.ts');
+  const { ClaySculptingController } = await import(
+    '../src/pottery/ClaySculptingController.ts'
+  );
+  const { createInitialClayProfile } = await import(
+    '../src/pottery/PotteryPresets.ts'
+  );
+  const { measureVessel } = await import('../src/pottery/PotteryProfile.ts');
+  const { ClayNameSculptor } = await import('../src/names/ClayNameSculptor.ts');
+
+  // 1. Meta Quest Touch controller mapping inside interaction zone
+  const pinchedCtrl = mapControllerToWheelHand({
+    handedness: 'right',
+    localPos: { x: 0.1, y: 0.12, z: 0.05 },
+    worldRelativeTip: { x: 0.1, y: 0.12, z: 0.05 },
+    selected: true,
+    squeezed: false,
+    clayHeight: 0.24,
+    velocity: { x: 0.02, y: -0.01, z: 0 },
+  });
+  assert.equal(pinchedCtrl.handedness, 'right');
+  assert.equal(pinchedCtrl.inInteractionZone, true);
+  assert.ok(pinchedCtrl.pinchDistance < 0.03);
+  assert.ok(pinchedCtrl.fingerCurl < 0.5);
+
+  const grippedOutOfZoneCtrl = mapControllerToWheelHand({
+    handedness: 'left',
+    localPos: { x: -0.65, y: 0.4, z: 0.1 },
+    worldRelativeTip: { x: -0.65, y: 0.4, z: 0.1 },
+    selected: false,
+    squeezed: true,
+    clayHeight: 0.2,
+    velocity: { x: 0, y: 0, z: 0 },
+  });
+  assert.equal(grippedOutOfZoneCtrl.inInteractionZone, false);
+  assert.ok(grippedOutOfZoneCtrl.fingerCurl > 0.8);
+  assert.ok(grippedOutOfZoneCtrl.pinchDistance > 0.08);
+
+  // 2. Unified Gallery helpers across mixed pottery & clay name items
+  const sculptor = new ClaySculptingController();
+  sculptor.applyGesture(
+    {
+      gesture: 'widen',
+      strength: 0.9,
+      activeHeightNorm: 0.55,
+      activeAngle: 0,
+      targetRadiusNorm: 0.7,
+      isPinching: false,
+      handsCount: 2,
+      inZone: true,
+      description: 'Widening belly',
+    },
+    0.2
+  );
+  const savedProfile = {
+    outerRadii: [...sculptor.profile.outerRadii],
+    innerRadii: [...sculptor.profile.innerRadii],
+    heights: [...sculptor.profile.heights],
+    openDepth: 0.42,
+    angularOffsets: [...sculptor.profile.angularOffsets],
+  };
+  const vesselItem: SavedPotteryItem = {
+    id: 'pot_unified_1',
+    name: 'Courtyard Jar',
+    createdAt: '2026-11-18T00:00:00.000Z',
+    glazeId: 'sage-celadon',
+    mode: 'free',
+    kind: 'vessel',
+    measurements: measureVessel(sculptor.profile),
+    profile: savedProfile,
+  };
+
+  const nameSculptor = new ClayNameSculptor();
+  nameSculptor.setNameText('QUEST');
+  nameSculptor.setPlaqueShape('heart');
+  nameSculptor.setLetterRelief(0.026);
+  nameSculptor.setLetterBoldness(1.3);
+  const nameData = nameSculptor.exportSavedNameData();
+  const baseProfile = createInitialClayProfile();
+  const nameItem: SavedPotteryItem = {
+    id: 'name_unified_1',
+    name: 'QUEST',
+    createdAt: '2026-11-18T00:01:00.000Z',
+    glazeId: 'terracotta-satin',
+    mode: 'free',
+    nameData,
+    measurements: measureVessel(baseProfile),
+    profile: {
+      outerRadii: [...baseProfile.outerRadii],
+      innerRadii: [...baseProfile.innerRadii],
+      heights: [...baseProfile.heights],
+      openDepth: 0,
+    },
+  };
+
+  const mixed = [vesselItem, nameItem];
+  assert.equal(getCreationKind(vesselItem), 'vessel');
+  assert.equal(getCreationKind(nameItem), 'name');
+  assert.equal(filterGalleryItems(mixed, 'all').length, 2);
+  assert.deepEqual(
+    filterGalleryItems(mixed, 'vessel').map((i) => i.id),
+    ['pot_unified_1']
+  );
+  assert.deepEqual(
+    filterGalleryItems(mixed, 'name').map((i) => i.id),
+    ['name_unified_1']
+  );
+
+  const vesselMeta = formatGalleryItemMeta(vesselItem, 'Sage Celadon');
+  assert.ok(vesselMeta.includes('Pottery Wheel'));
+  assert.ok(vesselMeta.includes('Sage Celadon'));
+
+  const nameMeta = formatGalleryItemMeta(nameItem, 'Terracotta Satin');
+  assert.ok(nameMeta.includes('Clay Name'));
+  assert.ok(nameMeta.includes('Heart'));
+  assert.ok(nameMeta.includes('Relief 26 mm'));
+  assert.ok(nameMeta.includes('1.30x'));
+
+  // 3. Reloading saved creations back into pottery & name controllers
+  const reloadVessel = new ClaySculptingController();
+  reloadVessel.loadProfile(vesselItem.profile);
+  assert.equal(reloadVessel.profile.openDepth, 0.42);
+  assert.equal(reloadVessel.isSubstantiallyModified, true);
+
+  const reloadName = new ClayNameSculptor();
+  reloadName.loadSavedNameData(nameData);
+  assert.equal(reloadName.state.text, 'QUEST');
+  assert.equal(reloadName.state.plaqueShape, 'heart');
+
+  sculptor.dispose();
+  reloadVessel.dispose();
+  nameSculptor.dispose();
+  reloadName.dispose();
+});
+
+test('StateManager defaults to hands-first inputMode (webcam, never mouse)', async () => {
+  const { StateManager } = await import('../src/app/StateManager.ts');
+  const state = new StateManager();
+  assert.equal(state.inputMode, 'webcam');
+  assert.notEqual(state.inputMode, 'mouse');
+});
 

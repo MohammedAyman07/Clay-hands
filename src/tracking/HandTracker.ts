@@ -185,7 +185,7 @@ export class HandTracker {
       if (name === 'NotAllowedError' || name === 'PermissionDeniedError') {
         this.errorType = 'permission-denied';
         this.errorMessage =
-          'Webcam permission was denied. You can enable camera access in browser settings or switch to Mouse & Keyboard mode.';
+          'Webcam permission was denied. Enable camera access for hand tracking, or use Mouse Fallback.';
       } else if (
         name === 'NotFoundError' ||
         name === 'DevicesNotFoundError' ||
@@ -193,12 +193,12 @@ export class HandTracker {
       ) {
         this.errorType = 'no-camera';
         this.errorMessage =
-          'No accessible webcam was detected. Continue smoothly with Mouse & Keyboard controls.';
+          'No accessible webcam was detected. Enter Meta Quest VR for hands, or use Mouse Fallback.';
       } else {
         this.errorType = 'model-load-failed';
         this.errorMessage =
           error?.message ||
-          'Could not initialize hand tracking model. Mouse & Keyboard controls remain ready.';
+          'Could not initialize hand tracking model. Mouse Fallback remains available.';
       }
       this.status = 'error';
       this.stopStream();

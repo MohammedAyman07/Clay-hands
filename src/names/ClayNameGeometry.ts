@@ -70,8 +70,11 @@ export function generateLetterMask(
   width: number,
   height: number
 ): Float32Array {
-  const text = (rawText.trim() || 'CLAY').slice(0, 16);
+  const text = rawText.trim().slice(0, 16);
   const mask = new Float32Array(width * height);
+  if (!text) {
+    return mask;
+  }
 
   if (typeof document !== 'undefined') {
     const scale = 2;
@@ -420,8 +423,15 @@ export class ClayNameGeometry {
   }
 
   public updateFromState(state: ClayNameState): void {
-    const cleanText = (state.text.trim() || 'CLAY HANDS').slice(0, 16);
-    if (cleanText !== this.cachedText || !this.cachedSdf) {
+    const cleanText = state.text.trim().slice(0, 16);
+    const isBlank = cleanText.length === 0;
+    if (isBlank) {
+      if (this.cachedText !== '' || this.cachedSdf !== null) {
+        this.cachedText = '';
+        this.cachedSdf = null;
+        this.baseLetterHeight.fill(0);
+      }
+    } else if (cleanText !== this.cachedText || !this.cachedSdf) {
       const mask = generateLetterMask(cleanText, this.sdfWidth, this.sdfHeight);
       this.cachedSdf = computeSignedDistanceField(
         mask,
@@ -433,12 +443,13 @@ export class ClayNameGeometry {
     }
 
     const needResampleBase =
-      this.cachedShape !== state.plaqueShape ||
-      Math.abs(this.cachedBoldness - state.letterBoldness) > 0.001;
+      !isBlank &&
+      (this.cachedShape !== state.plaqueShape ||
+        Math.abs(this.cachedBoldness - state.letterBoldness) > 0.001);
 
     const { cols, rows, positions, uvs } = this;
     const faceCount = cols * rows;
-    const sdf = this.cachedSdf!;
+    const sdf = this.cachedSdf;
     const boldnessShift = (state.letterBoldness - 1.0) * 2.2;
     const backZ = -0.013;
     const baseFrontZ = 0.012;
@@ -461,7 +472,7 @@ export class ClayNameGeometry {
         const u = THREE.MathUtils.clamp(x / NAME_PLAQUE_WIDTH + 0.5, 0.01, 0.99);
         const v = THREE.MathUtils.clamp(y / NAME_PLAQUE_HEIGHT + 0.5, 0.01, 0.99);
 
-        if (needResampleBase) {
+        if (needResampleBase && sdf) {
           // Sample SDF at physical normalized coordinates so text never distorts across shapes
           const sx = THREE.MathUtils.clamp(
             u * (this.sdfWidth - 1),
