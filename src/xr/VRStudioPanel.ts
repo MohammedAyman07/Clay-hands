@@ -66,6 +66,7 @@ export interface VRStudioPanelActions {
   onConfirmReset: () => void;
   onCancelReset: () => void;
   onRecenterStation: () => void;
+  onTogglePassthrough: () => void;
   onExitVR: () => void;
   onOpenNameStudio: () => void;
   onSetClayNameText: (text: string) => void;
@@ -99,6 +100,8 @@ export interface VRPanelSyncState {
   glazeId: string;
   gestureDesc: string;
   vrControllerMode?: boolean;
+  inARSession?: boolean;
+  passthroughActive?: boolean;
   handsCount: number;
   similarity: SimilarityResult | null;
   personality: PotteryPersonality | null;
@@ -161,6 +164,8 @@ export class VRStudioPanel extends THREE.Group {
   // Header & Navigation
   private readonly headerTitle: xb.UIText;
   private readonly headerSubtitle: xb.UIText;
+  private readonly mrBackdropBtn: xb.UIButton;
+  private readonly exitXrBtn: xb.UIButton;
   private readonly navButtons = new Map<AppScreen, xb.UIButton>();
 
   // Per-screen root panels
@@ -316,6 +321,25 @@ export class VRStudioPanel extends THREE.Group {
       style: { fontSize: 13, lineHeight: 1.25, opacity: 0.8, textAlign: 'left' },
     });
 
+    this.mrBackdropBtn = new xb.UIButton({
+      label: 'MR: Real Desk',
+      icon: 'view_in_ar',
+      visible: false,
+      style: {
+        display: 'none',
+        fontSize: 12,
+        padding: 6,
+        backgroundColor: '#2b6b64',
+      },
+      onClick: () => actions.onTogglePassthrough(),
+    });
+    this.exitXrBtn = new xb.UIButton({
+      label: 'Exit VR',
+      icon: 'close',
+      style: { fontSize: 13, padding: 6 },
+      onClick: () => actions.onExitVR(),
+    });
+
     const headerTop = new xb.UIPanel({
       style: {
         width: '100%',
@@ -326,18 +350,14 @@ export class VRStudioPanel extends THREE.Group {
       },
       children: [
         this.headerTitle,
+        this.mrBackdropBtn,
         new xb.UIButton({
           label: 'Recenter',
           icon: 'my_location',
           style: { fontSize: 13, padding: 6 },
           onClick: () => actions.onRecenterStation(),
         }),
-        new xb.UIButton({
-          label: 'Exit VR',
-          icon: 'close',
-          style: { fontSize: 13, padding: 6 },
-          onClick: () => actions.onExitVR(),
-        }),
+        this.exitXrBtn,
       ],
     });
 
@@ -1479,7 +1499,7 @@ export class VRStudioPanel extends THREE.Group {
       onClick: () => actions.onSmashAllGallery(),
     });
     this.galleryRestoreBtn = new xb.UIButton({
-      label: 'Restore (Time)',
+      label: 'Chrono Rewind',
       icon: 'history',
       visible: false,
       style: {
@@ -1892,12 +1912,25 @@ export class VRStudioPanel extends THREE.Group {
 
     // Header & status
     const inputTag = state.vrControllerMode
-      ? 'CONTROLLERS IN VR'
+      ? 'CONTROLLERS IN XR'
       : state.handsCount > 0
-        ? `${state.handsCount} HAND${state.handsCount === 1 ? '' : 'S'} IN VR`
-        : 'QUEST STUDIO READY';
+        ? `${state.handsCount} HAND${state.handsCount === 1 ? '' : 'S'} IN ${state.inARSession ? 'MR' : 'VR'}`
+        : state.inARSession
+          ? 'QUEST MR READY'
+          : 'QUEST STUDIO READY';
     this.setText(this.headerTitle, `CLAY HANDS · ${inputTag}`);
     this.setText(this.headerSubtitle, state.gestureDesc);
+    const inAR = Boolean(state.inARSession);
+    const ptActive = Boolean(state.passthroughActive);
+    this.setShown(this.mrBackdropBtn, inAR);
+    if (inAR) {
+      this.setLabel(
+        this.mrBackdropBtn,
+        ptActive ? 'MR: Real Desk' : 'MR: VR Room'
+      );
+      this.setBg(this.mrBackdropBtn, ptActive ? '#2b6b64' : '#b84f33');
+    }
+    this.setLabel(this.exitXrBtn, inAR ? 'Exit MR' : 'Exit VR');
 
     // Highlight active nav tab
     for (const [scr, btn] of this.navButtons.entries()) {
@@ -2311,7 +2344,7 @@ export class VRStudioPanel extends THREE.Group {
       if (isRestoring) {
         this.setText(
           this.galleryItemMeta,
-          'Time Stone active — reversing cracks & shards back into creations!'
+          'Chrono Rewind active — reversing cracks & shards back into creations!'
         );
       } else if (smashMode) {
         const focusLine = state.galleryFocusedName
@@ -2322,9 +2355,9 @@ export class VRStudioPanel extends THREE.Group {
         this.setText(
           this.galleryItemMeta,
           smashedCount > 0
-            ? `${focusLine} · ${crackedCount} cracked, ${smashedCount}/${totalVessels} broken · Restore or Exit (deletes broken)`
+            ? `${focusLine} · ${crackedCount} cracked, ${smashedCount}/${totalVessels} broken · Chrono Rewind or Exit (deletes broken)`
             : hasDamage
-              ? `${focusLine} · ${crackedCount} cracked · Press Restore or hit again to break!`
+              ? `${focusLine} · ${crackedCount} cracked · Press Chrono Rewind or hit again to break!`
               : smashScope === 'single'
                 ? `${focusLine} · Selected piece only · Hit 1 cracks, Hit 2 shatters!`
                 : `${focusLine} · All ${totalVessels} pieces · Hit 1 cracks, Hit 2 shatters!`
@@ -2371,7 +2404,7 @@ export class VRStudioPanel extends THREE.Group {
       this.setShown(this.galleryRestoreBtn, showRestore);
       this.setLabel(
         this.galleryRestoreBtn,
-        isRestoring ? 'Reversing…' : 'Restore (Time)'
+        isRestoring ? 'Reversing…' : 'Chrono Rewind'
       );
       this.setDisabled(this.galleryRestoreBtn, isRestoring);
 

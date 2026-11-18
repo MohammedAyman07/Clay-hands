@@ -503,6 +503,17 @@ h2 {
   background: #5b7f4f;
 }
 
+.btn-mr {
+  background: #2b6b64;
+  border-color: #1c4a45;
+  color: #fff8ee;
+  box-shadow: inset 0 1px 0 rgba(215, 248, 242, 0.25);
+}
+
+.btn-mr:hover:not(:disabled) {
+  background: #358179;
+}
+
 .btn-smash {
   background: #8a5228;
   border-color: #5d3315;

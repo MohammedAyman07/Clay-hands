@@ -825,11 +825,11 @@ export class AudioManager {
     }
   }
 
-  public playTimeStoneRestore(): void {
+  public playChronoRewind(): void {
     if (!this.ctx || !this.sfxGain || !this.enabled) return;
     const now = this.ctx.currentTime;
 
-    // 1. Reverse-envelope crystalline shimmer sweep (Doctor Strange rewind feel)
+    // 1. Reverse-envelope crystalline shimmer sweep (Chrono Rewind feel)
     const revOsc = this.ctx.createOscillator();
     const revOsc2 = this.ctx.createOscillator();
     const revFilter = this.ctx.createBiquadFilter();

@@ -123,6 +123,7 @@ function createDustTexture(): THREE.CanvasTexture {
 
 export class SceneManager {
   public readonly studioGroup = new THREE.Group();
+  private readonly roomBackdropGroup = new THREE.Group();
   public readonly kilnPosition = new THREE.Vector3(1.85, 0, -0.35);
   public readonly galleryPosition = new THREE.Vector3(-1.65, 0, -0.35);
   public readonly galleryGroup = new THREE.Group();
@@ -133,6 +134,11 @@ export class SceneManager {
   private readonly materials: THREE.Material[] = [];
   private readonly textures: THREE.Texture[] = [];
   private envRT: THREE.WebGLRenderTarget | null = null;
+  private sceneRef: THREE.Scene | null = null;
+  private rendererRef: THREE.WebGLRenderer | null = null;
+  private defaultBackground: THREE.Color | null = null;
+  private defaultFog: THREE.FogExp2 | null = null;
+  private passthroughEnabled = false;
 
   private dustPoints: THREE.Points | null = null;
   private dustBasePositions: Float32Array | null = null;
@@ -150,6 +156,9 @@ export class SceneManager {
     camera: THREE.PerspectiveCamera,
     isSoftwareGl: boolean
   ): void {
+    this.rendererRef = renderer;
+    this.sceneRef = scene;
+
     renderer.outputColorSpace = THREE.SRGBColorSpace;
     renderer.toneMapping = THREE.ACESFilmicToneMapping;
     renderer.toneMappingExposure = 1.08;
@@ -165,10 +174,14 @@ export class SceneManager {
     pmrem.dispose();
 
     const horizonColor = 0xe8dac6;
-    scene.background = new THREE.Color(horizonColor);
-    scene.fog = new THREE.FogExp2(horizonColor, 0.055);
+    this.defaultBackground = new THREE.Color(horizonColor);
+    this.defaultFog = new THREE.FogExp2(horizonColor, 0.055);
+    scene.background = this.defaultBackground;
+    scene.fog = this.defaultFog;
 
     this.setupLighting(scene, isSoftwareGl);
+    this.roomBackdropGroup.name = 'WorkshopRoomBackdrop';
+    this.studioGroup.add(this.roomBackdropGroup);
     this.buildWorkshopRoom(renderer.capabilities.getMaxAnisotropy(), isSoftwareGl);
     scene.add(this.studioGroup);
 
@@ -286,7 +299,7 @@ export class SceneManager {
     const floor = new THREE.Mesh(floorGeo, floorMat);
     floor.rotation.x = -Math.PI / 2;
     floor.receiveShadow = true;
-    this.studioGroup.add(floor);
+    this.roomBackdropGroup.add(floor);
 
     // 2. Back plaster wall + side window wall
     const backWallGeo = new THREE.PlaneGeometry(12, 5);
@@ -301,7 +314,7 @@ export class SceneManager {
     leftWall.rotation.y = Math.PI / 2;
     leftWall.position.set(-3.4, 2.5, 0);
     leftWall.receiveShadow = true;
-    this.studioGroup.add(backWall, leftWall);
+    this.roomBackdropGroup.add(backWall, leftWall);
 
     // 3. Sunlit studio window frame on left wall + warm sunbeam plane
     const frameBarGeo = new THREE.BoxGeometry(0.08, 1.8, 0.08);
@@ -324,7 +337,7 @@ export class SceneManager {
     sill.position.set(0, -0.88, 0.06);
     const vBar = new THREE.Mesh(frameBarGeo, woodMat);
     windowGroup.add(pane, sill, vBar);
-    this.studioGroup.add(windowGroup);
+    this.roomBackdropGroup.add(windowGroup);
 
     // 4. Potter's Oak Side Workbench (behind-left of wheel for tools & water bowl)
     const benchTopGeo = new THREE.BoxGeometry(1.45, 0.05, 0.58);
@@ -406,7 +419,7 @@ export class SceneManager {
     }
 
     bench.add(waterBowl, waterDisc, ribTool, plantPot);
-    this.studioGroup.add(bench);
+    this.roomBackdropGroup.add(bench);
 
     // 5. Back wooden display shelf with studio sample vessels
     const shelfGeo = new THREE.BoxGeometry(1.9, 0.04, 0.3);
@@ -426,7 +439,7 @@ export class SceneManager {
     shelf.position.set(-0.2, 1.48, -2.32);
     shelf.castShadow = true;
     shelf.receiveShadow = true;
-    this.studioGroup.add(shelf);
+    this.roomBackdropGroup.add(shelf);
 
     const shelfVase = new THREE.Mesh(sampleVaseGeo, ceramicAccentMat);
     shelfVase.position.set(-0.65, 1.5, -2.32);
@@ -434,7 +447,7 @@ export class SceneManager {
     const shelfBowl = new THREE.Mesh(bowlGeo, stoneMat);
     shelfBowl.position.set(0.25, 1.5, -2.32);
     shelfBowl.castShadow = true;
-    this.studioGroup.add(shelfVase, shelfBowl);
+    this.roomBackdropGroup.add(shelfVase, shelfBowl);
 
     // 6. Gallery Display Pedestal on the left side of the studio
     const galPedGeo = new THREE.CylinderGeometry(0.22, 0.25, 0.8, 28);
@@ -483,7 +496,23 @@ export class SceneManager {
     this.materials.push(dustMat);
     this.dustPoints = new THREE.Points(dustGeo, dustMat);
     this.dustPoints.frustumCulled = false;
-    this.studioGroup.add(this.dustPoints);
+    this.roomBackdropGroup.add(this.dustPoints);
+  }
+
+  public setPassthroughMode(enabled: boolean): void {
+    this.passthroughEnabled = enabled;
+    this.roomBackdropGroup.visible = !enabled;
+    if (this.sceneRef) {
+      this.sceneRef.background = enabled ? null : this.defaultBackground;
+      this.sceneRef.fog = enabled ? null : this.defaultFog;
+    }
+    if (this.rendererRef) {
+      this.rendererRef.setClearColor(enabled ? 0x000000 : 0xe8dac6, enabled ? 0 : 1);
+    }
+  }
+
+  public isPassthroughMode(): boolean {
+    return this.passthroughEnabled;
   }
 
   public setReducedMotion(reduced: boolean): void {

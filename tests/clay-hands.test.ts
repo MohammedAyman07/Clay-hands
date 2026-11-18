@@ -621,7 +621,7 @@ test('PotterySmashSystem enforces non-overlapping distance, 2-hit crack -> shatt
   sampleReversedTransform(frames, 1, outPos, outQuat);
   assert.ok(Math.abs(outPos.y - 0.2) < 1e-4);
 
-  // 4. Full 2-hit Crack -> Shatter, Hand Focus, Sweep & Time-Stone Restore cycle
+  // 4. Full 2-hit Crack -> Shatter, Hand Focus, Sweep & Chrono Rewind cycle
   let crackCalls = 0;
   let shatterCalls = 0;
   let restoreStarted = false;
@@ -736,7 +736,7 @@ test('PotterySmashSystem enforces non-overlapping distance, 2-hit crack -> shatt
   assert.equal(smashSys.getIntactCount(), 0);
   assert.deepEqual(smashSys.getSmashedItemIds().sort(), ['pot_a', 'pot_b']);
 
-  // Trigger Doctor Strange Time-Stone Restore -> heals everything to 0/2 intact & clears deletion list
+  // Trigger Chrono Rewind -> heals everything to 0/2 intact & clears deletion list
   assert.equal(smashSys.startRestore(), true);
   assert.equal(restoreStarted, true);
   assert.equal(smashSys.isRestoring(), true);
@@ -862,7 +862,7 @@ test('ClayNameGeometry & ClayNameSculptor support 3D embossed lettering, plaque 
   assert.equal(reloaded.data?.[0].kind, 'name');
   assert.equal(reloaded.data?.[0].nameData?.text, 'ALICE');
 
-  // 5. Nameplate shard slicing & Smash + Time-Stone Restore
+  // 5. Nameplate shard slicing & Smash + Chrono Rewind
   const shards = buildShardGeometriesFromName(sculptor.clayGeometry, 3, 5);
   assert.equal(shards.length, 15);
   for (const s of shards) {
@@ -1190,5 +1190,46 @@ test('ClayDeformer smooth & enforceSmoothGradient remain deterministic with pool
     assert.ok(Math.abs(p1.outerRadii[i] - p2.outerRadii[i]) < 1e-12);
   }
 });
+
+test('XRManager MR Passthrough state transitions, AR backdrop toggle, and capability guards work safely', async () => {
+  const { XRManager } = await import('../src/xr/XRManager.ts');
+  const xr = new XRManager();
+
+  // Desktop / no WebXR: never throws and disables both VR & AR safely
+  await xr.probeSupport();
+  assert.equal(xr.inXRSession, false);
+  assert.equal(xr.inARSession, false);
+  assert.equal(xr.passthroughActive, false);
+  assert.equal(await xr.startXRSession('immersive-ar'), false);
+  assert.equal(xr.togglePassthroughBackdrop(), false);
+
+  // Simulated immersive-ar session start & live backdrop toggle
+  const fakeArSession = { environmentBlendMode: 'alpha-blend' } as XRSession;
+  const startedPassthrough = xr.syncSessionStarted(fakeArSession);
+  assert.equal(startedPassthrough, true);
+  assert.equal(xr.inXRSession, true);
+  assert.equal(xr.inARSession, true);
+  assert.equal(xr.activeSessionMode, 'immersive-ar');
+  assert.equal(xr.passthroughActive, true);
+
+  // Toggle MR Real Desk <-> VR Cozy Room in-place without ending session
+  assert.equal(xr.togglePassthroughBackdrop(), false);
+  assert.equal(xr.inARSession, true);
+  assert.equal(xr.togglePassthroughBackdrop(), true);
+
+  // Ending XR session cleanly clears MR & VR state
+  xr.syncSessionEnded();
+  assert.equal(xr.inXRSession, false);
+  assert.equal(xr.inARSession, false);
+  assert.equal(xr.activeSessionMode, null);
+  assert.equal(xr.passthroughActive, false);
+
+  // Simulated pure immersive-vr session never allows AR passthrough backdrop toggle
+  const fakeVrSession = { environmentBlendMode: 'opaque' } as XRSession;
+  assert.equal(xr.syncSessionStarted(fakeVrSession), false);
+  assert.equal(xr.inARSession, false);
+  assert.equal(xr.togglePassthroughBackdrop(), false);
+});
+
 
 

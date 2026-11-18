@@ -232,7 +232,7 @@ export function computeGalleryLayoutPositions(
 }
 
 /**
- * Pure interpolation helper used by Doctor Strange Time-Stone rewind to play
+ * Pure interpolation helper used by Chrono Rewind to play
  * recorded physics frames backwards with smooth elastic arrival.
  */
 export function sampleReversedTransform(
@@ -717,7 +717,7 @@ function createTimeMandalaTexture(
     ctx.arc(0, 0, size * 0.37, 0, Math.PI * 2);
     ctx.stroke();
 
-    // Clock tick ring (Doctor Strange Time-Stone dial marks)
+    // Clock tick ring (Chrono Rewind dial marks)
     for (let i = 0; i < 48; i++) {
       const a = (i / 48) * Math.PI * 2;
       const rIn = i % 4 === 0 ? size * 0.37 : size * 0.405;
@@ -805,7 +805,7 @@ function createTimeMandalaTexture(
 }
 
 /**
- * Interactive Gallery Pottery Bat-Smash & Doctor Strange Time-Stone Reversal engine.
+ * Interactive Gallery Pottery Bat-Smash & Chrono Rewind Reversal engine.
  * Works across Desktop Mouse, Webcam Hand Tracking, and Meta Quest WebXR.
  */
 export class PotterySmashSystem {
@@ -833,7 +833,7 @@ export class PotterySmashSystem {
   private sweepAllTimer = -1;
   private sweepAllDuration = 0.52;
 
-  // Doctor Strange Emerald Time-Stone Mandala & Time Sparks
+  // Emerald Chrono Rewind Mandala & Time Sparks
   private readonly mandalaGroup = new THREE.Group();
   private readonly outerMandalaMesh!: THREE.Mesh;
   private readonly innerMandalaMesh!: THREE.Mesh;
@@ -914,7 +914,7 @@ export class PotterySmashSystem {
       handInner,
       sparks,
       sparkBase,
-    } = this.buildTimeStoneMandala();
+    } = this.buildChronoRewindMandala();
     this.outerMandalaMesh = outerMesh;
     this.innerMandalaMesh = innerMesh;
     this.portalOuterMesh = portalOuter;
@@ -1091,7 +1091,7 @@ export class PotterySmashSystem {
     this.batGroup.name = 'WoodenBaseballBat';
   }
 
-  private buildTimeStoneMandala(): {
+  private buildChronoRewindMandala(): {
     outerMesh: THREE.Mesh;
     innerMesh: THREE.Mesh;
     portalOuter: THREE.Mesh;
@@ -1159,7 +1159,7 @@ export class PotterySmashSystem {
     const portalInner = new THREE.Mesh(portalGeo, portalInnerMat);
     portalInner.position.set(0, 0.24, -0.13);
 
-    // Swirling green Time-Stone sparks
+    // Swirling green Chrono Rewind sparks
     const sparkCount = 90;
     const sparkPos = new Float32Array(sparkCount * 3);
     const sparkBase = new Float32Array(sparkCount * 3);
@@ -1955,8 +1955,8 @@ export class PotterySmashSystem {
   }
 
   /**
-   * Initiates Avengers / Doctor Strange Time-Stone reversal:
-   * glows emerald Eldritch mandalas and plays back every shard's recorded trajectory
+   * Initiates Chrono Rewind reversal:
+   * glows emerald geometric mandalas and plays back every shard's recorded trajectory
    * in reverse until all smashed or cracked vessels snap cleanly back intact.
    */
   public startRestore(): boolean {
@@ -2183,7 +2183,7 @@ export class PotterySmashSystem {
       }
     }
 
-    // 4. Step forward shard physics OR reverse Doctor Strange time travel
+    // 4. Step forward shard physics OR reverse Chrono Rewind time travel
     if (this.phase === 'restoring') {
       this.updateTimeReversal(dt, camera);
     } else {
@@ -2517,7 +2517,7 @@ export class PotterySmashSystem {
       : RESTORE_DURATION_SEC;
     this.restoreProgress = Math.min(1, this.restoreProgress + dt / duration);
 
-    // Animate Doctor Strange Eldritch Time-Stone mandalas
+    // Animate emerald Chrono Rewind mandalas
     const envelope = Math.sin(this.restoreProgress * Math.PI);
     const scaleCurve = 0.45 + 0.65 * Math.min(1, this.restoreProgress * 2.4);
 
@@ -2531,7 +2531,7 @@ export class PotterySmashSystem {
     this.portalOuterMesh.scale.setScalar(scaleCurve);
     this.portalInnerMesh.scale.setScalar(scaleCurve * 0.88);
 
-    // Wrist/bat Time-Stone spell ring hovers beside active pointer/hand
+    // Wrist/bat Chrono Rewind spell ring hovers beside active pointer/hand
     this.handMandalaGroup.position.set(
       this.batCurrentLocal.x,
       this.batCurrentLocal.y + 0.12,

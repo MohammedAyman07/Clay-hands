@@ -195,6 +195,7 @@ export class ClayHandsApp extends xb.Script {
   }
 
   public async init(): Promise<void> {
+    this.xrManager.attachXRBlocks(xb.core);
     const renderer = xb.core.renderer as THREE.WebGLRenderer;
     const scene = xb.core.scene;
     const camera = xb.core.camera;
@@ -216,7 +217,7 @@ export class ClayHandsApp extends xb.Script {
       },
       onCeramicShatter: (count) => this.audio.playCeramicShatter(count),
       onTimeRestoreStart: () => {
-        this.audio.playTimeStoneRestore();
+        this.audio.playChronoRewind();
         this.rerenderUI();
       },
       onTimeRestoreComplete: () => {
@@ -450,6 +451,7 @@ export class ClayHandsApp extends xb.Script {
           );
         }
       },
+      onTogglePassthrough: () => this.toggleMRPassthrough(),
       onExitVR: () => void this.xrManager.toggleVRSession(),
       onOpenNameStudio: () => this.openNameStudio(),
       onSetClayNameText: (text) => this.setClayNameText(text),
@@ -476,8 +478,8 @@ export class ClayHandsApp extends xb.Script {
           this.state.lessonId = lessonId;
           this.state.challengePresetId = challengeId;
         },
-        onStartMode: (mode, inputMode, lessonId, challengeId) =>
-          void this.startSession(mode, inputMode, lessonId, challengeId),
+        onStartMode: (mode, inputMode, lessonId, challengeId, xrMode) =>
+          void this.startSession(mode, inputMode, lessonId, challengeId, xrMode),
         onRequestWebcam: () => this.requestWebcamAndCalibrate(),
         onUseMouseMode: () => this.switchToMouseMode(),
         onRecalibrate: () => this.startCalibration(),
@@ -573,7 +575,11 @@ export class ClayHandsApp extends xb.Script {
           this.ui.showCelebration(false);
           this.rerenderUI();
         },
-        onToggleVR: () => void this.xrManager.toggleVRSession(),
+        onToggleVR: (mode) =>
+          void this.xrManager.startXRSession(mode ?? 'immersive-vr').then((ok) => {
+            if (!ok) this.rerenderUI();
+          }),
+        onTogglePassthrough: () => this.toggleMRPassthrough(),
         onToggleHandCursor: () => void this.toggleHandCursor(),
         onCelebrateCreateAnother: () => {
           if (this.activeCreationKind === 'name') {
@@ -1677,7 +1683,8 @@ export class ClayHandsApp extends xb.Script {
     mode: GameMode,
     inputMode: InputMode,
     lessonId?: GuidedLessonId,
-    challengeId?: string
+    challengeId?: string,
+    xrMode: 'immersive-vr' | 'immersive-ar' = 'immersive-vr'
   ): Promise<void> {
     this.audio.unlock();
     this.activeCreationKind = 'vessel';
@@ -1720,14 +1727,18 @@ export class ClayHandsApp extends xb.Script {
     }
 
     let resolvedMode: InputMode = inputMode;
+    const canEnterRequestedXR =
+      xrMode === 'immersive-ar'
+        ? this.xrManager.arSupported
+        : this.xrManager.vrSupported;
     if (
       resolvedMode !== 'mouse' &&
       (resolvedMode === 'webxr' || this.xrManager.isMetaQuest()) &&
-      this.xrManager.vrSupported &&
+      canEnterRequestedXR &&
       !this.xrManager.inXRSession
     ) {
-      const enteredVR = await this.xrManager.toggleVRSession();
-      if (enteredVR) {
+      const enteredXR = await this.xrManager.startXRSession(xrMode);
+      if (enteredXR) {
         this.state.inputMode = 'webxr';
         this.navigate('studio');
         return;
@@ -2277,7 +2288,10 @@ export class ClayHandsApp extends xb.Script {
       kilnFinished: this.kilnFinished,
       saveStatus: this.saveStatus,
       vrSupported: this.xrManager.vrSupported,
+      arSupported: this.xrManager.arSupported,
       inVR: this.xrManager.inXRSession,
+      inAR: this.xrManager.inARSession,
+      passthroughActive: this.xrManager.passthroughActive,
       vrControllerMode: this.xrManager.controllerTrackingActive,
       vrMessage: this.xrManager.statusMessage,
       handCursorActive: this.handCursorActive && !this.shouldHideHandCursor(),
@@ -2316,7 +2330,14 @@ export class ClayHandsApp extends xb.Script {
     );
   }
 
-  public onXRSessionStarted(): void {
+  private toggleMRPassthrough(): void {
+    if (!this.xrManager.inARSession) return;
+    const enabled = this.xrManager.togglePassthroughBackdrop();
+    this.sceneManager.setPassthroughMode(enabled);
+    this.rerenderUI();
+  }
+
+  public onXRSessionStarted(session?: XRSession): void {
     this.audio.unlock();
     if (this.state.inputMode !== 'webxr') {
       this.desktopInputModeBeforeXR = this.state.inputMode;
@@ -2329,7 +2350,8 @@ export class ClayHandsApp extends xb.Script {
     const uiRoot = document.getElementById('ui-root');
     if (uiRoot) uiRoot.style.display = 'none';
 
-    this.xrManager.inXRSession = true;
+    const passthrough = this.xrManager.syncSessionStarted(session);
+    this.sceneManager.setPassthroughMode(passthrough);
     (
       xb.core?.renderer as
         | (THREE.WebGLRenderer & { xr?: { setFoveation?: (v: number) => void } })
@@ -2362,9 +2384,8 @@ export class ClayHandsApp extends xb.Script {
   public onXRSessionEnded(): void {
     const uiRoot = document.getElementById('ui-root');
     if (uiRoot) uiRoot.style.display = '';
-    this.xrManager.inXRSession = false;
-    this.xrManager.handTrackingActive = false;
-    this.xrManager.controllerTrackingActive = false;
+    this.xrManager.syncSessionEnded();
+    this.sceneManager.setPassthroughMode(false);
     this.vrPanel.visible = false;
     this.state.inputMode =
       this.desktopInputModeBeforeXR === 'webxr'
@@ -2759,7 +2780,7 @@ export class ClayHandsApp extends xb.Script {
       }
     }
 
-    // 6. Gallery Bat Smash, Time-Stone Reversal, or gentle pedestal rotation
+    // 6. Gallery Bat Smash, Chrono Rewind, or gentle pedestal rotation
     if (this.state.screen === 'gallery') {
       const smashStatus = this.smashSystem.getStatus();
       if (smashStatus.smashMode) {
@@ -2902,6 +2923,8 @@ export class ClayHandsApp extends xb.Script {
           glazeId: this.state.selectedGlazeId,
           gestureDesc,
           vrControllerMode: this.xrManager.controllerTrackingActive,
+          inARSession: this.xrManager.inARSession,
+          passthroughActive: this.xrManager.passthroughActive,
           handsCount: this.latestFrame.hands.length,
           similarity: this.currentSimilarity,
           personality: this.currentPersonality,
@@ -2960,6 +2983,8 @@ export class ClayHandsApp extends xb.Script {
         s.glazeId = this.state.selectedGlazeId;
         s.gestureDesc = gestureDesc;
         s.vrControllerMode = this.xrManager.controllerTrackingActive;
+        s.inARSession = this.xrManager.inARSession;
+        s.passthroughActive = this.xrManager.passthroughActive;
         s.handsCount = this.latestFrame.hands.length;
         s.similarity = this.currentSimilarity;
         s.personality = this.currentPersonality;

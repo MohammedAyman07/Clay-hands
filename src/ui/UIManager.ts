@@ -57,7 +57,8 @@ export interface UIActions {
     mode: GameMode,
     inputMode: InputMode,
     lessonId?: GuidedLessonId,
-    challengeId?: string
+    challengeId?: string,
+    xrMode?: 'immersive-vr' | 'immersive-ar'
   ) => void;
   onRequestWebcam: () => Promise<void>;
   onUseMouseMode: () => void;
@@ -90,7 +91,8 @@ export interface UIActions {
   onToggleGlazePaintMode: (paintMode: boolean) => void;
   onToggleGlazeSpin: () => void;
   onStageJump: (stage: PotteryStage) => void;
-  onToggleVR: () => void;
+  onToggleVR: (mode?: 'immersive-vr' | 'immersive-ar') => void;
+  onTogglePassthrough: () => void;
   onToggleHandCursor: () => void;
   onCelebrateCreateAnother: () => void;
   onTutorialSelectStep: (index: number) => void;
@@ -139,7 +141,10 @@ export interface StudioHUDState {
   kilnFinished: boolean;
   saveStatus: { saved: boolean; message: string };
   vrSupported: boolean;
+  arSupported: boolean;
   inVR: boolean;
+  inAR: boolean;
+  passthroughActive: boolean;
   vrControllerMode?: boolean;
   vrMessage: string;
   handCursorActive: boolean;
@@ -639,6 +644,11 @@ export class UIManager {
                 ? '<button class="btn btn-vr btn-welcome-main" id="btn-welcome-vr">Enter Meta Quest VR (Hands)</button>'
                 : ''
             }
+            ${
+              hud.arSupported
+                ? '<button class="btn btn-mr btn-welcome-main" id="btn-welcome-mr">Enter MR Passthrough (Desk)</button>'
+                : ''
+            }
             <button class="btn btn-primary btn-welcome-main" id="btn-enter-studio">Pottery Wheel (Hands)</button>
             <button class="btn btn-primary btn-welcome-main" id="btn-open-names">Clay Names (Hands)</button>
             ${
@@ -656,7 +666,7 @@ export class UIManager {
           </div>
         </div>
         <div class="control-hint-line">
-          <span>Meta Quest Hand Tracking First · Webcam MediaPipe Hands · Mouse Fallback After</span>
+          <span>Meta Quest Hand Tracking &amp; MR Passthrough · Webcam MediaPipe Hands · Mouse Fallback After</span>
         </div>
       </div>
     `;
@@ -681,8 +691,53 @@ export class UIManager {
       this.actions.onNavigate('settings')
     );
     el.querySelector('#btn-welcome-vr')?.addEventListener('click', () =>
-      this.actions.onToggleVR()
+      this.actions.onToggleVR('immersive-vr')
     );
+    el.querySelector('#btn-welcome-mr')?.addEventListener('click', () =>
+      this.actions.onToggleVR('immersive-ar')
+    );
+  }
+
+  private renderQuickXRButtons(hud: StudioHUDState): string {
+    if (hud.inVR) {
+      return `
+        ${
+          hud.inAR
+            ? `<button class="btn btn-small btn-mr" id="hud-mr-btn">${
+                hud.passthroughActive ? 'MR: Real Desk' : 'MR: VR Room'
+              }</button>`
+            : ''
+        }
+        <button class="btn btn-small btn-vr" id="hud-vr-btn">${
+          hud.inAR ? 'Exit MR' : 'Exit VR'
+        }</button>
+      `;
+    }
+    return `
+      ${
+        hud.vrSupported
+          ? '<button class="btn btn-small btn-vr" id="hud-vr-btn">Enter VR</button>'
+          : ''
+      }
+      ${
+        hud.arSupported
+          ? '<button class="btn btn-small btn-mr" id="hud-mr-btn">MR Passthrough</button>'
+          : ''
+      }
+    `;
+  }
+
+  private bindQuickXRButtons(el: HTMLElement): void {
+    el.querySelector('#hud-vr-btn')?.addEventListener('click', () =>
+      this.actions.onToggleVR('immersive-vr')
+    );
+    el.querySelector('#hud-mr-btn')?.addEventListener('click', () => {
+      if (this.latestHUD?.inAR) {
+        this.actions.onTogglePassthrough();
+      } else {
+        this.actions.onToggleVR('immersive-ar');
+      }
+    });
   }
 
   private renderVesselThumbHTML(
@@ -818,6 +873,11 @@ export class UIManager {
               ? '<button class="btn btn-vr" id="btn-start-vr">Enter Meta Quest VR (Hands)</button>'
               : ''
           }
+          ${
+            hud.arSupported
+              ? '<button class="btn btn-mr" id="btn-start-mr">Enter MR Passthrough (Desk)</button>'
+              : ''
+          }
           <button class="btn btn-primary" id="btn-start-webcam">Start with Hands (Webcam)</button>
           <button class="btn btn-ghost" id="btn-start-mouse">Mouse Fallback</button>
         </div>
@@ -929,7 +989,17 @@ export class UIManager {
         chosenMode,
         'webxr',
         chosenLesson,
-        chosenChallenge
+        chosenChallenge,
+        'immersive-vr'
+      );
+    });
+    el.querySelector('#btn-start-mr')?.addEventListener('click', () => {
+      void this.actions.onStartMode(
+        chosenMode,
+        'webxr',
+        chosenLesson,
+        chosenChallenge,
+        'immersive-ar'
       );
     });
     el.querySelector('#btn-hud-hand-cursor')?.addEventListener('click', () =>
@@ -1091,11 +1161,7 @@ export class UIManager {
                   ? `<button class="btn btn-small btn-primary" id="hud-enable-hands-btn">Enable Hands</button>`
                   : ''
             }
-            ${
-              hud.vrSupported
-                ? `<button class="btn btn-small btn-secondary" id="hud-vr-btn">${hud.inVR ? 'Exit VR' : 'Enter VR'}</button>`
-                : ''
-            }
+            ${this.renderQuickXRButtons(hud)}
             ${
               hud.showHandCursorControl &&
               (hud.handCursorActive || hud.inputMode === 'webcam')
@@ -1273,9 +1339,7 @@ export class UIManager {
     el.querySelector('#hud-enable-hands-btn')?.addEventListener('click', () =>
       void this.actions.onRequestWebcam()
     );
-    el.querySelector('#hud-vr-btn')?.addEventListener('click', () =>
-      this.actions.onToggleVR()
-    );
+    this.bindQuickXRButtons(el);
     el.querySelector('#btn-hud-hand-cursor')?.addEventListener('click', () =>
       this.actions.onToggleHandCursor()
     );
@@ -1374,11 +1438,7 @@ export class UIManager {
                   ? `<button class="btn btn-small btn-secondary" id="hud-recal-btn">Recalibrate</button>`
                   : ''
             }
-            ${
-              hud.vrSupported
-                ? `<button class="btn btn-small btn-vr" id="hud-vr-btn">${hud.inVR ? 'Exit VR' : 'Enter VR'}</button>`
-                : ''
-            }
+            ${this.renderQuickXRButtons(hud)}
             ${
               hud.showHandCursorControl
                 ? `<button class="btn btn-small ${hud.handCursorActive ? 'btn-hand-active' : 'btn-secondary'}" id="btn-hud-hand-cursor">${hud.handCursorActive ? 'Hand Cursor: ON' : 'Hand Cursor'}</button>`
@@ -1608,9 +1668,7 @@ export class UIManager {
     el.querySelector('#hud-recal-btn')?.addEventListener('click', () =>
       this.actions.onRecalibrate()
     );
-    el.querySelector('#hud-vr-btn')?.addEventListener('click', () =>
-      this.actions.onToggleVR()
-    );
+    this.bindQuickXRButtons(el);
     el.querySelector('#btn-hud-hand-cursor')?.addEventListener('click', () =>
       this.actions.onToggleHandCursor()
     );
@@ -1846,11 +1904,7 @@ export class UIManager {
                   ? '<button class="btn btn-small btn-secondary" id="hud-recal-btn">Recalibrate</button>'
                   : ''
             }
-            ${
-              hud.vrSupported
-                ? `<button class="btn btn-small btn-vr" id="hud-vr-btn">${hud.inVR ? 'Exit VR' : 'Enter VR'}</button>`
-                : ''
-            }
+            ${this.renderQuickXRButtons(hud)}
             ${
               hud.showHandCursorControl
                 ? `<button class="btn btn-small ${hud.handCursorActive ? 'btn-hand-active' : 'btn-secondary'}" id="btn-hud-hand-cursor">
@@ -1888,9 +1942,7 @@ export class UIManager {
     el.querySelector('#hud-recal-btn')?.addEventListener('click', () =>
       this.actions.onRecalibrate()
     );
-    el.querySelector('#hud-vr-btn')?.addEventListener('click', () =>
-      this.actions.onToggleVR()
-    );
+    this.bindQuickXRButtons(el);
     el.querySelector('#btn-hud-hand-cursor')?.addEventListener('click', () =>
       this.actions.onToggleHandCursor()
     );
@@ -1986,11 +2038,7 @@ export class UIManager {
                   ? `<button class="btn btn-small btn-primary" id="hud-enable-hands-btn">Enable Hands</button>`
                   : ''
             }
-            ${
-              hud.vrSupported
-                ? `<button class="btn btn-small btn-vr" id="hud-vr-btn">${hud.inVR ? 'Exit VR' : 'Enter VR'}</button>`
-                : ''
-            }
+            ${this.renderQuickXRButtons(hud)}
             ${
               hud.showHandCursorControl
                 ? `<button class="btn btn-small ${hud.handCursorActive ? 'btn-hand-active' : 'btn-secondary'}" id="btn-hud-hand-cursor">
@@ -2081,9 +2129,7 @@ export class UIManager {
         hud.activeCreationKind === 'name' ? 'name-studio' : 'studio'
       )
     );
-    el.querySelector('#hud-vr-btn')?.addEventListener('click', () =>
-      this.actions.onToggleVR()
-    );
+    this.bindQuickXRButtons(el);
     el.querySelector('#btn-hud-hand-cursor')?.addEventListener('click', () =>
       this.actions.onToggleHandCursor()
     );
@@ -2116,11 +2162,7 @@ export class UIManager {
         </div>
         <div class="hud-top-right">
           <div class="hud-quick-actions">
-            ${
-              hud.vrSupported
-                ? `<button class="btn btn-small btn-vr" id="hud-vr-btn">${hud.inVR ? 'Exit VR' : 'Enter VR'}</button>`
-                : ''
-            }
+            ${this.renderQuickXRButtons(hud)}
             ${
               hud.showHandCursorControl && hud.handCursorActive
                 ? `<button class="btn btn-small btn-hand-active" id="btn-hud-hand-cursor">Hand Cursor: ON</button>`
@@ -2178,9 +2220,7 @@ export class UIManager {
     el.querySelector('#btn-view-gal')?.addEventListener('click', () =>
       this.actions.onNavigate('gallery')
     );
-    el.querySelector('#hud-vr-btn')?.addEventListener('click', () =>
-      this.actions.onToggleVR()
-    );
+    this.bindQuickXRButtons(el);
     el.querySelector('#btn-hud-hand-cursor')?.addEventListener('click', () =>
       this.actions.onToggleHandCursor()
     );
@@ -2231,21 +2271,21 @@ export class UIManager {
       'Your fired pottery vessels and 3D clay names live together here.';
     if (isRestoring) {
       subtitleText =
-        'Time Stone active — reversing time to restore cracked & shattered creations!';
+        'Chrono Rewind active — reversing time to restore cracked & shattered creations!';
     } else if (smashMode) {
       const targetSummary = safeFocused
         ? hud.galleryFocusedHits >= 1
           ? `Target: ${safeFocused} (Cracked 1/2 — hit once more to shatter!)`
           : `Target: ${safeFocused} (Intact 0/2 — Hit 1 cracks, Hit 2 shatters)`
         : smashedCount > 0 && intactCount === 0
-          ? 'Shattered! Press Restore to rewind time, or Exit to delete.'
+          ? 'Shattered! Press Chrono Rewind to restore, or Exit to delete.'
           : 'Move Meta Quest hand/bat onto any piece to focus (pointer fallback).';
       const countsSummary = `${crackedCount} cracked · ${smashedCount}/${totalVessels} shattered`;
       subtitleText =
         smashedCount > 0
-          ? `${targetSummary} · ${countsSummary} · Restore to keep, or Exit to delete!`
+          ? `${targetSummary} · ${countsSummary} · Chrono Rewind to keep, or Exit to delete!`
           : hasDamage
-            ? `${targetSummary} · ${countsSummary} · Press Restore to rewind time!`
+            ? `${targetSummary} · ${countsSummary} · Press Chrono Rewind to restore!`
             : smashScope === 'single'
               ? `${targetSummary} · Showing selected piece · Swipe or pinch with hand (click fallback)!`
               : `${targetSummary} · Showing all ${totalVessels} creations · Swipe by hand or hit Smash All!`;
@@ -2263,7 +2303,7 @@ export class UIManager {
         <div class="hud-corner-card ${isRestoring ? 'hud-card-timestorm' : ''}">
           <p class="eyebrow">${
             isRestoring
-              ? 'TIME REVERSAL'
+              ? 'CHRONO REWIND'
               : smashMode
                 ? smashScope === 'single'
                   ? 'SMASH BAT · SELECTED PIECE'
@@ -2283,11 +2323,7 @@ export class UIManager {
         </div>
         <div class="hud-top-right">
           <div class="hud-quick-actions">
-            ${
-              hud.vrSupported
-                ? `<button class="btn btn-small btn-vr" id="hud-vr-btn">${hud.inVR ? 'Exit VR' : 'Enter VR'}</button>`
-                : ''
-            }
+            ${this.renderQuickXRButtons(hud)}
             ${
               hud.showHandCursorControl
                 ? `<button class="btn btn-small ${hud.handCursorActive ? 'btn-hand-active' : 'btn-secondary'}" id="btn-hud-hand-cursor">
@@ -2359,7 +2395,7 @@ export class UIManager {
                           ${
                             hasDamage || isRestoring
                               ? `<button class="btn btn-small btn-timestorm" id="btn-gal-restore" ${isRestoring ? 'disabled' : ''}>
-                                   ${isRestoring ? 'Reversing Time…' : 'Restore (Time)'}
+                                   ${isRestoring ? 'Reversing Time…' : 'Chrono Rewind'}
                                  </button>`
                               : ''
                           }
@@ -2451,9 +2487,7 @@ export class UIManager {
     el.querySelector('#btn-gal-home')?.addEventListener('click', () =>
       this.actions.onNavigate('welcome')
     );
-    el.querySelector('#hud-vr-btn')?.addEventListener('click', () =>
-      this.actions.onToggleVR()
-    );
+    this.bindQuickXRButtons(el);
     el.querySelector('#btn-hud-hand-cursor')?.addEventListener('click', () =>
       this.actions.onToggleHandCursor()
     );
@@ -2473,11 +2507,7 @@ export class UIManager {
             <h2>Studio Settings</h2>
           </div>
           <div class="cta-row">
-            ${
-              hud.vrSupported
-                ? `<button class="btn btn-small btn-vr" id="hud-vr-btn">${hud.inVR ? 'Exit VR' : 'Enter VR'}</button>`
-                : ''
-            }
+            ${this.renderQuickXRButtons(hud)}
             ${
               hud.showHandCursorControl
                 ? `<button class="btn btn-small ${hud.handCursorActive ? 'btn-hand-active' : 'btn-secondary'}" id="btn-hud-hand-cursor">
@@ -2642,9 +2672,7 @@ export class UIManager {
     el.querySelector('#btn-set-tut')?.addEventListener('click', () =>
       this.actions.onNavigate('tutorial')
     );
-    el.querySelector('#hud-vr-btn')?.addEventListener('click', () =>
-      this.actions.onToggleVR()
-    );
+    this.bindQuickXRButtons(el);
     el.querySelector('#btn-hud-hand-cursor')?.addEventListener('click', () =>
       this.actions.onToggleHandCursor()
     );

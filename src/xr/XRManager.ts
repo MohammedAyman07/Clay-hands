@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import * as xb from 'xrblocks';
+import type * as xb from 'xrblocks';
 import type {
   CalibrationData,
   HandTrackingFrame,
@@ -22,9 +22,36 @@ export class XRManager {
   public vrSupported = false;
   public arSupported = false;
   public inXRSession = false;
+  public activeSessionMode: 'immersive-vr' | 'immersive-ar' | null = null;
+  public passthroughActive = false;
   public handTrackingActive = false;
   public controllerTrackingActive = false;
   public statusMessage = 'Checking WebXR support…';
+
+  private pendingSessionMode: 'immersive-vr' | 'immersive-ar' | null = null;
+  private pendingPassthrough: boolean | null = null;
+  private startingSession = false;
+  private xbCore: typeof xb.core | null = null;
+
+  public attachXRBlocks(core: typeof xb.core): void {
+    this.xbCore = core;
+  }
+
+  private async resolveXRCore(): Promise<typeof xb.core | null> {
+    if (this.xbCore) return this.xbCore;
+    if (typeof window === 'undefined') return null;
+    try {
+      const mod = await import('xrblocks');
+      this.xbCore = mod.core;
+      return this.xbCore;
+    } catch {
+      return null;
+    }
+  }
+
+  public get inARSession(): boolean {
+    return this.inXRSession && this.activeSessionMode === 'immersive-ar';
+  }
 
   public isMetaQuest(): boolean {
     return isMetaQuestEnvironment(
@@ -133,7 +160,13 @@ export class XRManager {
       this.arSupported = false;
     }
 
-    if (this.vrSupported || this.arSupported) {
+    if (this.vrSupported && this.arSupported) {
+      this.statusMessage =
+        'WebXR ready: Quest VR Studio & Mixed Reality Passthrough both supported.';
+    } else if (this.arSupported) {
+      this.statusMessage =
+        'WebXR Mixed Reality Passthrough (immersive-ar) supported.';
+    } else if (this.vrSupported) {
       this.statusMessage =
         'WebXR supported! You can enter VR or continue with Webcam / Mouse.';
     } else {
@@ -142,25 +175,131 @@ export class XRManager {
     }
   }
 
-  public async toggleVRSession(): Promise<boolean> {
-    const manager = xb.core?.webXRSessionManager;
-    if (!manager || (!this.vrSupported && !this.arSupported)) {
+  public async startXRSession(
+    requestedMode: 'immersive-vr' | 'immersive-ar' = 'immersive-vr'
+  ): Promise<boolean> {
+    const core = await this.resolveXRCore();
+    const manager = core?.webXRSessionManager as unknown as
+      | {
+          getSessionOptions?: () => XRSessionInit;
+          startSession?: () => void;
+          onSessionStartedInternal?: (session: XRSession) => Promise<void>;
+          waitingForXRSession?: boolean;
+        }
+      | undefined;
+
+    if (this.inXRSession) {
+      try {
+        const session = core?.renderer?.xr?.getSession?.();
+        await session?.end();
+      } catch {
+        // Session cleanup runs via onXRSessionEnded
+      }
       return false;
     }
 
-    try {
-      if (this.inXRSession) {
-        const session = xb.core.renderer?.xr?.getSession?.();
-        await session?.end();
-        return false;
-      }
-      await manager.startSession?.();
-      return true;
-    } catch {
-      this.statusMessage =
-        'Could not start WebXR session. Continuing in desktop studio.';
+    if (!manager || typeof navigator === 'undefined' || !navigator.xr) {
       return false;
     }
+
+    if (requestedMode === 'immersive-ar' && !this.arSupported) {
+      this.statusMessage =
+        'MR Passthrough is not available on this device. Use Enter VR or Desktop Studio.';
+      return false;
+    }
+    if (requestedMode === 'immersive-vr' && !this.vrSupported) {
+      if (this.arSupported) {
+        return this.startXRSession('immersive-ar');
+      }
+      this.statusMessage = 'WebXR VR is not supported in this browser.';
+      return false;
+    }
+
+    if (this.startingSession || manager.waitingForXRSession) {
+      return false;
+    }
+
+    this.startingSession = true;
+    this.pendingSessionMode = requestedMode;
+    this.pendingPassthrough = requestedMode === 'immersive-ar';
+
+    try {
+      const sessionOptions = manager.getSessionOptions?.() ?? {
+        optionalFeatures: ['local-floor', 'hand-tracking'],
+      };
+
+      if (typeof manager.onSessionStartedInternal === 'function') {
+        manager.waitingForXRSession = true;
+        try {
+          const session = await navigator.xr.requestSession(
+            requestedMode,
+            sessionOptions
+          );
+          await manager.onSessionStartedInternal(session);
+          return true;
+        } finally {
+          manager.waitingForXRSession = false;
+        }
+      }
+
+      if (requestedMode === 'immersive-vr') {
+        manager.startSession?.();
+        return true;
+      }
+
+      this.pendingSessionMode = null;
+      this.pendingPassthrough = null;
+      return false;
+    } catch {
+      this.pendingSessionMode = null;
+      this.pendingPassthrough = null;
+      this.statusMessage =
+        requestedMode === 'immersive-ar'
+          ? 'Could not start MR Passthrough. Continuing in studio — try Enter VR Studio if needed.'
+          : 'Could not start WebXR session. Continuing in desktop studio.';
+      return false;
+    } finally {
+      this.startingSession = false;
+    }
+  }
+
+  public async toggleVRSession(
+    requestedMode: 'immersive-vr' | 'immersive-ar' = 'immersive-vr'
+  ): Promise<boolean> {
+    return this.startXRSession(requestedMode);
+  }
+
+  public syncSessionStarted(session?: XRSession): boolean {
+    const blend = session?.environmentBlendMode;
+    const isAR =
+      blend === 'alpha-blend' ||
+      blend === 'additive' ||
+      this.pendingSessionMode === 'immersive-ar';
+    this.inXRSession = true;
+    this.activeSessionMode = isAR ? 'immersive-ar' : 'immersive-vr';
+    this.passthroughActive = isAR ? (this.pendingPassthrough ?? true) : false;
+    this.pendingSessionMode = null;
+    this.pendingPassthrough = null;
+    return this.passthroughActive;
+  }
+
+  public syncSessionEnded(): void {
+    this.inXRSession = false;
+    this.activeSessionMode = null;
+    this.passthroughActive = false;
+    this.pendingSessionMode = null;
+    this.pendingPassthrough = null;
+    this.handTrackingActive = false;
+    this.controllerTrackingActive = false;
+  }
+
+  public togglePassthroughBackdrop(): boolean {
+    if (!this.inARSession) {
+      this.passthroughActive = false;
+      return false;
+    }
+    this.passthroughActive = !this.passthroughActive;
+    return this.passthroughActive;
   }
 
   public sampleXRHands(
@@ -170,7 +309,7 @@ export class XRManager {
     wheelSurfaceY: number,
     clayHeight: number
   ): { frame: HandTrackingFrame; calibration: CalibrationData } | null {
-    const input = xb.core?.input;
+    const input = this.xbCore?.input;
     if (!this.inXRSession || !input) {
       this.handTrackingActive = false;
       this.controllerTrackingActive = false;
@@ -412,7 +551,7 @@ export class XRManager {
     triggerPressed: boolean;
     worldSpeed: number;
   } {
-    const input = xb.core?.input;
+    const input = this.xbCore?.input;
     if (!this.inXRSession || !input) {
       this.hasPrevVRBatPos = false;
       return {
