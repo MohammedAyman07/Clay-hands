@@ -165,6 +165,14 @@ export class VRStudioPanel extends THREE.Group {
 
   // Per-screen root panels
   private readonly screenPanels: Record<AppScreen, xb.UIPanel>;
+  private readonly uniquePanels: xb.UIPanel[] = [];
+
+  // Property-diff caches to avoid triggering UIKit signals & Yoga layout every VR frame
+  private readonly lastTextCache = new WeakMap<xb.UIText, string>();
+  private readonly lastLabelCache = new WeakMap<xb.UIButton, string>();
+  private readonly lastBgCache = new WeakMap<xb.UIElement, string | undefined>();
+  private readonly lastWidthCache = new WeakMap<xb.UIElement, string>();
+  private readonly lastDisabledCache = new WeakMap<xb.UIButton, boolean>();
 
   // Welcome (Home)
   private readonly welcomeGalleryBtn: xb.UIButton;
@@ -1742,6 +1750,11 @@ export class VRStudioPanel extends THREE.Group {
       gallery: galleryPanel,
       settings: settingsPanel,
     };
+    for (const panel of Object.values(this.screenPanels)) {
+      if (!this.uniquePanels.includes(panel)) {
+        this.uniquePanels.push(panel);
+      }
+    }
 
     this.card = new xb.UICard({
       size: { width: 0.72, height: 'auto' },
@@ -1777,6 +1790,13 @@ export class VRStudioPanel extends THREE.Group {
 
   private currentSelectedGalleryId: string | null = null;
   private latestGalleryItems: SavedPotteryItem[] = [];
+  private memoGalleryItemsRef: SavedPotteryItem[] | null = null;
+  private memoGalleryLength = -1;
+  private memoGalleryFilter: GalleryFilter = 'all';
+  private memoGalleryBypassFilter = false;
+  private memoVesselCount = 0;
+  private memoNameCount = 0;
+  private memoVisibleItems: SavedPotteryItem[] = [];
   private latestSoundEnabled = true;
   private latestReducedMotion = false;
   private latestHandedness: 'left' | 'right' = 'right';
@@ -1789,6 +1809,37 @@ export class VRStudioPanel extends THREE.Group {
     if (el.style.display !== nextDisplay) {
       el.style.display = nextDisplay;
     }
+  }
+
+  private setText(el: xb.UIText, value: string): void {
+    if (this.lastTextCache.get(el) === value) return;
+    this.lastTextCache.set(el, value);
+    el.text = value;
+  }
+
+  private setLabel(btn: xb.UIButton, value: string): void {
+    if (this.lastLabelCache.get(btn) === value) return;
+    this.lastLabelCache.set(btn, value);
+    btn.label = value;
+  }
+
+  private setBg(el: xb.UIElement, bg: string | undefined): void {
+    if (this.lastBgCache.has(el) && this.lastBgCache.get(el) === bg) return;
+    this.lastBgCache.set(el, bg);
+    el.style.backgroundColor = bg;
+  }
+
+  private setDisabled(btn: xb.UIButton, disabled: boolean): void {
+    if (this.lastDisabledCache.get(btn) === disabled) return;
+    this.lastDisabledCache.set(btn, disabled);
+    btn.disabled = disabled;
+  }
+
+  private setWidthPct(el: xb.UIElement, pct: number): void {
+    const val = `${Math.round(pct)}%` as `${number}%`;
+    if (this.lastWidthCache.get(el) === val) return;
+    this.lastWidthCache.set(el, val);
+    el.style.width = val;
   }
 
   private refreshStartSelectionStyles(): void {
@@ -1845,79 +1896,100 @@ export class VRStudioPanel extends THREE.Group {
       : state.handsCount > 0
         ? `${state.handsCount} HAND${state.handsCount === 1 ? '' : 'S'} IN VR`
         : 'QUEST STUDIO READY';
-    this.headerTitle.text = `CLAY HANDS · ${inputTag}`;
-    this.headerSubtitle.text = state.gestureDesc;
+    this.setText(this.headerTitle, `CLAY HANDS · ${inputTag}`);
+    this.setText(this.headerSubtitle, state.gestureDesc);
 
     // Highlight active nav tab
     for (const [scr, btn] of this.navButtons.entries()) {
-      btn.style.backgroundColor =
-        scr === state.screen ? '#b84f33' : undefined;
+      this.setBg(btn, scr === state.screen ? '#b84f33' : undefined);
     }
 
     // Toggle visible screen panel cleanly in both visibility & Yoga layout
     const activePanel = this.screenPanels[state.screen];
-    const uniquePanels = new Set(Object.values(this.screenPanels));
-    for (const panel of uniquePanels) {
+    for (let i = 0; i < this.uniquePanels.length; i++) {
+      const panel = this.uniquePanels[i];
       this.setShown(panel, panel === activePanel);
     }
 
+    // Reset cycled kiln name once user leaves kiln or restarts firing
+    if (state.screen !== 'kiln' || !state.kilnFinished) {
+      if (this.customKilnName !== '' || this.kilnNameIdx !== 0) {
+        this.customKilnName = '';
+        this.kilnNameIdx = 0;
+      }
+    }
+
     // Welcome counts
-    this.welcomeGalleryBtn.label = `Studio Gallery (${state.galleryItems.length})`;
+    if (state.screen === 'welcome') {
+      this.setLabel(
+        this.welcomeGalleryBtn,
+        `Studio Gallery (${state.galleryItems.length})`
+      );
+    }
 
     this.latestCreationKind = state.activeCreationKind;
 
     // Shared Brush section visible when painting in Studio, Name Studio, or Glaze
     const showBrush =
-      (state.screen === 'studio' && state.brushActive && !state.showResetConfirm && !state.showCelebration) ||
+      (state.screen === 'studio' &&
+        state.brushActive &&
+        !state.showResetConfirm &&
+        !state.showCelebration) ||
       (state.screen === 'name-studio' && state.clayNameTool === 'paint') ||
       (state.screen === 'glaze' && state.glazePaintMode);
     this.setShown(this.brushSectionPanel, showBrush);
 
     if (showBrush) {
       for (const [cid, btn] of this.pigmentButtons.entries()) {
-        btn.style.backgroundColor =
-          !state.eraserMode && state.brushColorId === cid ? '#ffffff44' : undefined;
+        this.setBg(
+          btn,
+          !state.eraserMode && state.brushColorId === cid
+            ? '#ffffff44'
+            : undefined
+        );
       }
       for (const [sz, btn] of this.brushSizeButtons.entries()) {
-        btn.style.backgroundColor =
-          state.brushSize === sz ? '#b84f33' : undefined;
+        this.setBg(btn, state.brushSize === sz ? '#b84f33' : undefined);
       }
-      this.brushEraserBtn.style.backgroundColor = state.eraserMode
-        ? '#b84f33'
-        : undefined;
-      this.brushUndoBtn.disabled = !state.canUndoPaint;
-      this.brushClearBtn.disabled = !state.hasPaint;
+      this.setBg(this.brushEraserBtn, state.eraserMode ? '#b84f33' : undefined);
+      this.setDisabled(this.brushUndoBtn, !state.canUndoPaint);
+      this.setDisabled(this.brushClearBtn, !state.hasPaint);
     }
 
     // Tutorial live state
     if (state.screen === 'tutorial') {
-      INTERACTIVE_TUTORIAL_STEPS.forEach((step, idx) => {
+      for (let idx = 0; idx < INTERACTIVE_TUTORIAL_STEPS.length; idx++) {
+        const step = INTERACTIVE_TUTORIAL_STEPS[idx];
         const btn = this.tutStepBtns[idx];
-        if (!btn) return;
+        if (!btn) continue;
         const done = state.completedTutorialIds.has(step.id);
         const active = idx === state.tutorialStepIndex;
-        btn.label = `${done ? '✓' : idx + 1}.${step.title.split(' ')[0]}`;
-        btn.style.backgroundColor = active
-          ? '#b84f33'
-          : done
-            ? '#4d6d43'
-            : undefined;
-      });
-      this.tutTitleText.text = `Step ${state.tutorialStepIndex + 1}/5 · ${state.tutorialTitle}`;
-      this.tutCueText.text = state.tutorialCue;
-      this.tutStatusText.text = state.tutorialFinishedAll
-        ? 'All 5 gestures mastered!'
-        : state.completedTutorialIds.has(
-              INTERACTIVE_TUTORIAL_STEPS[state.tutorialStepIndex]?.id ?? ''
-            )
-          ? 'Step complete!'
-          : state.tutorialMatched
-            ? 'Keep holding…'
-            : 'Bring hands over clay and hold the gesture.';
-      this.tutProgressFill.style.width = `${Math.round(state.tutorialProgress * 100)}%`;
-      this.tutEnterBtn.label = state.tutorialFinishedAll
-        ? 'Start Throwing'
-        : 'Enter Studio';
+        const shortWord = step.title.split(' ')[0];
+        this.setLabel(btn, `${done ? '✓' : idx + 1}.${shortWord}`);
+        this.setBg(btn, active ? '#b84f33' : done ? '#4d6d43' : undefined);
+      }
+      this.setText(
+        this.tutTitleText,
+        `Step ${state.tutorialStepIndex + 1}/5 · ${state.tutorialTitle}`
+      );
+      this.setText(this.tutCueText, state.tutorialCue);
+      this.setText(
+        this.tutStatusText,
+        state.tutorialFinishedAll
+          ? 'All 5 gestures mastered!'
+          : state.completedTutorialIds.has(
+                INTERACTIVE_TUTORIAL_STEPS[state.tutorialStepIndex]?.id ?? ''
+              )
+            ? 'Step complete!'
+            : state.tutorialMatched
+              ? 'Keep holding…'
+              : 'Bring hands over clay and hold the gesture.'
+      );
+      this.setWidthPct(this.tutProgressFill, state.tutorialProgress * 100);
+      this.setLabel(
+        this.tutEnterBtn,
+        state.tutorialFinishedAll ? 'Start Throwing' : 'Enter Studio'
+      );
     }
 
     // Studio live state
@@ -1933,13 +2005,13 @@ export class VRStudioPanel extends THREE.Group {
       );
 
       for (const [st, btn] of this.studioStageBtns.entries()) {
-        btn.style.backgroundColor = state.stage === st ? '#b84f33' : undefined;
+        this.setBg(btn, state.stage === st ? '#b84f33' : undefined);
       }
 
       if (Math.abs(this.lastStudioWheelSpeed - state.wheelSpeed) > 0.01) {
         this.lastStudioWheelSpeed = state.wheelSpeed;
         this.studioSpeedSlider.value = state.wheelSpeed;
-        this.studioSpeedVal.text = `${state.wheelSpeed.toFixed(1)}x`;
+        this.setText(this.studioSpeedVal, `${state.wheelSpeed.toFixed(1)}x`);
       }
 
       if (state.mode === 'guided') {
@@ -1948,31 +2020,44 @@ export class VRStudioPanel extends THREE.Group {
           lesson?.steps.find((s) => s.stage === state.stage) ?? lesson?.steps[0];
         this.setShown(this.studioModeHintText, Boolean(step));
         if (step) {
-          this.studioModeHintText.text = `${step.title}: ${step.instruction}`;
+          this.setText(
+            this.studioModeHintText,
+            `${step.title}: ${step.instruction}`
+          );
         }
       } else if (state.mode === 'challenge') {
-        const preset = CHALLENGE_PRESETS.find((c) => c.id === state.challengeId);
+        const preset = CHALLENGE_PRESETS.find(
+          (c) => c.id === state.challengeId
+        );
         this.setShown(this.studioModeHintText, true);
-        this.studioModeHintText.text = `Target: ${preset?.name ?? 'Challenge'} · ${state.similarity?.score ?? 0}% match`;
+        this.setText(
+          this.studioModeHintText,
+          `Target: ${preset?.name ?? 'Challenge'} · ${state.similarity?.score ?? 0}% match`
+        );
       } else {
         this.setShown(this.studioModeHintText, false);
       }
 
-      this.studioBrushToggleBtn.label = state.brushActive
-        ? 'Brush: ON'
-        : 'Brush: Off';
-      this.studioBrushToggleBtn.style.backgroundColor = state.brushActive
-        ? '#b84f33'
-        : undefined;
-      this.studioUndoBtn.disabled = !state.canUndo;
+      this.setLabel(
+        this.studioBrushToggleBtn,
+        state.brushActive ? 'Brush: ON' : 'Brush: Off'
+      );
+      this.setBg(
+        this.studioBrushToggleBtn,
+        state.brushActive ? '#b84f33' : undefined
+      );
+      this.setDisabled(this.studioUndoBtn, !state.canUndo);
 
       if (state.showCelebration && state.personality) {
-        this.celebrationTitle.text = state.personality.name;
+        this.setText(this.celebrationTitle, state.personality.name);
         const simLine =
           state.mode === 'challenge' && state.similarity
             ? ` · ${state.similarity.score}% match`
             : '';
-        this.celebrationDetail.text = `${state.personality.notes} (${state.personality.measurements.heightCm} cm × ${state.personality.measurements.maxWidthCm} cm${simLine})`;
+        this.setText(
+          this.celebrationDetail,
+          `${state.personality.notes} (${state.personality.measurements.heightCm} cm × ${state.personality.measurements.maxWidthCm} cm${simLine})`
+        );
       }
     }
 
@@ -1980,38 +2065,43 @@ export class VRStudioPanel extends THREE.Group {
     if (state.screen === 'name-studio') {
       this.latestClayNameText = state.clayNameText;
       const trimmed = state.clayNameText.trim();
-      this.nameWordTitle.text = trimmed
-        ? `Clay Name: "${trimmed}"`
-        : 'Clay Name: Blank (Hand-Write)';
-      this.nameBlankBtn.style.backgroundColor =
-        trimmed === '' ? '#b84f33' : undefined;
-      this.nameStampToggleBtn.style.backgroundColor = this.nameStampOpen
-        ? '#b84f33'
-        : undefined;
+      this.setText(
+        this.nameWordTitle,
+        trimmed ? `Clay Name: "${trimmed}"` : 'Clay Name: Blank (Hand-Write)'
+      );
+      this.setBg(this.nameBlankBtn, trimmed === '' ? '#b84f33' : undefined);
+      this.setBg(
+        this.nameStampToggleBtn,
+        this.nameStampOpen ? '#b84f33' : undefined
+      );
       this.setShown(this.nameStampPanel, this.nameStampOpen);
+      const upperTrimmed = trimmed.toUpperCase();
       for (const [word, btn] of this.namePresetBtns.entries()) {
-        btn.style.backgroundColor =
-          trimmed.toUpperCase() === word ? '#b84f33' : undefined;
+        this.setBg(btn, upperTrimmed === word ? '#b84f33' : undefined);
       }
       for (const [sId, btn] of this.nameShapeBtns.entries()) {
-        btn.style.backgroundColor =
-          state.clayNameShape === sId ? '#b84f33' : undefined;
+        this.setBg(btn, state.clayNameShape === sId ? '#b84f33' : undefined);
       }
       for (const [tId, btn] of this.nameToolBtns.entries()) {
-        btn.style.backgroundColor =
-          state.clayNameTool === tId ? '#b84f33' : undefined;
+        this.setBg(btn, state.clayNameTool === tId ? '#b84f33' : undefined);
       }
       if (Math.abs(this.lastNameReliefMm - state.clayNameReliefMm) > 0.4) {
         this.lastNameReliefMm = state.clayNameReliefMm;
         this.nameReliefSlider.value = Math.round(state.clayNameReliefMm);
-        this.nameReliefVal.text = `${Math.round(state.clayNameReliefMm)} mm`;
+        this.setText(
+          this.nameReliefVal,
+          `${Math.round(state.clayNameReliefMm)} mm`
+        );
       }
       if (Math.abs(this.lastNameBoldness - state.clayNameBoldness) > 0.02) {
         this.lastNameBoldness = state.clayNameBoldness;
         this.nameBoldSlider.value = state.clayNameBoldness;
-        this.nameBoldVal.text = `${state.clayNameBoldness.toFixed(2)}x`;
+        this.setText(
+          this.nameBoldVal,
+          `${state.clayNameBoldness.toFixed(2)}x`
+        );
       }
-      this.nameUndoBtn.disabled = !state.canUndoClayName;
+      this.setDisabled(this.nameUndoBtn, !state.canUndoClayName);
     }
 
     // Glaze live state
@@ -2022,53 +2112,75 @@ export class VRStudioPanel extends THREE.Group {
         state.activeCreationKind === 'name'
           ? `${state.clayNameText.trim() || 'Hand-Written Clay'} Nameplate`
           : state.personality?.name ?? 'Studio Vessel';
-      this.glazeVesselTitle.text = `${baseTitle} · ${glaze.name} (${glaze.finishLabel})`;
+      this.setText(
+        this.glazeVesselTitle,
+        `${baseTitle} · ${glaze.name} (${glaze.finishLabel})`
+      );
       if (state.activeCreationKind === 'name') {
-        this.glazeVesselMeta.text = `56 cm × 27 cm ${state.clayNameShape} nameplate · Paint & choose kiln glaze`;
+        this.setText(
+          this.glazeVesselMeta,
+          `56 cm × 27 cm ${state.clayNameShape} nameplate · Paint & choose kiln glaze`
+        );
       } else if (state.personality) {
         const m = state.personality.measurements;
-        this.glazeVesselMeta.text = `H ${m.heightCm} cm · W ${m.maxWidthCm} cm · Rim ${m.openingWidthCm} cm`;
+        this.setText(
+          this.glazeVesselMeta,
+          `H ${m.heightCm} cm · W ${m.maxWidthCm} cm · Rim ${m.openingWidthCm} cm`
+        );
       }
-      this.glazeBackBtn.label =
-        state.activeCreationKind === 'name' ? 'Back to Name' : 'Back to Wheel';
-      this.glazePaintBtn.style.backgroundColor = state.glazePaintMode
-        ? '#b84f33'
-        : undefined;
-      this.glazeOrbitBtn.style.backgroundColor = !state.glazePaintMode
-        ? '#b84f33'
-        : undefined;
-      this.glazeSpinBtn.label = state.glazeSpinEnabled
-        ? 'Wheel: Spin'
-        : 'Wheel: Still';
-      this.glazeSpinBtn.style.backgroundColor = state.glazeSpinEnabled
-        ? '#4d6d43'
-        : undefined;
+      this.setLabel(
+        this.glazeBackBtn,
+        state.activeCreationKind === 'name' ? 'Back to Name' : 'Back to Wheel'
+      );
+      this.setBg(
+        this.glazePaintBtn,
+        state.glazePaintMode ? '#b84f33' : undefined
+      );
+      this.setBg(
+        this.glazeOrbitBtn,
+        !state.glazePaintMode ? '#b84f33' : undefined
+      );
+      this.setLabel(
+        this.glazeSpinBtn,
+        state.glazeSpinEnabled ? 'Wheel: Spin' : 'Wheel: Still'
+      );
+      this.setBg(
+        this.glazeSpinBtn,
+        state.glazeSpinEnabled ? '#4d6d43' : undefined
+      );
       for (const [gid, btn] of this.glazeSwatches.entries()) {
-        btn.style.backgroundColor =
-          gid === state.glazeId ? '#b84f33' : undefined;
+        this.setBg(btn, gid === state.glazeId ? '#b84f33' : undefined);
       }
     }
 
     // Kiln live state
     if (state.screen === 'kiln') {
-      this.kilnCaptionText.text = state.kilnCaption;
-      this.kilnTempText.text = state.kilnTemp;
-      this.kilnProgressFill.style.width = `${Math.round(state.kilnProgress * 100)}%`;
+      this.setText(this.kilnCaptionText, state.kilnCaption);
+      this.setText(this.kilnTempText, state.kilnTemp);
+      this.setWidthPct(this.kilnProgressFill, state.kilnProgress * 100);
       this.setShown(this.kilnDonePanel, state.kilnFinished);
-      this.kilnAnotherBtn.label =
-        state.activeCreationKind === 'name' ? 'Craft Another Name' : 'Throw Another';
+      this.setLabel(
+        this.kilnAnotherBtn,
+        state.activeCreationKind === 'name'
+          ? 'Craft Another Name'
+          : 'Throw Another'
+      );
       if (state.kilnFinished) {
         const fallbackName =
           state.activeCreationKind === 'name'
             ? `${state.clayNameText.trim() || 'Hand-Written Clay'} Nameplate`
             : state.personality?.name ?? 'Studio Vessel';
-        this.kilnNameBtn.label = `Name: ${this.customKilnName || fallbackName}`;
-        this.kilnSaveBtn.disabled = state.saveStatus.saved;
-        this.kilnSaveBtn.label = state.saveStatus.saved
-          ? 'Saved'
-          : 'Save to Gallery';
+        this.setLabel(
+          this.kilnNameBtn,
+          `Name: ${this.customKilnName || fallbackName}`
+        );
+        this.setDisabled(this.kilnSaveBtn, state.saveStatus.saved);
+        this.setLabel(
+          this.kilnSaveBtn,
+          state.saveStatus.saved ? 'Saved' : 'Save to Gallery'
+        );
         this.setShown(this.kilnSaveStatusText, Boolean(state.saveStatus.message));
-        this.kilnSaveStatusText.text = state.saveStatus.message;
+        this.setText(this.kilnSaveStatusText, state.saveStatus.message);
       }
     }
 
@@ -2080,32 +2192,55 @@ export class VRStudioPanel extends THREE.Group {
       const smashScope = state.gallerySmashScope;
       const crackedCount = state.galleryCrackedCount;
       const smashedCount = state.gallerySmashedCount;
-      const totalVessels = Math.max(1, state.galleryTotalVessels || items.length);
+      const totalVessels = Math.max(
+        1,
+        state.galleryTotalVessels || items.length
+      );
       const isRestoring = state.galleryIsRestoring;
       const intactInView = Math.max(0, totalVessels - smashedCount);
       const hasDamage = smashedCount > 0 || crackedCount > 0;
+      const bypassFilter = smashMode || isRestoring;
 
-      const vesselCount = items.filter(
-        (i) => getCreationKind(i) === 'vessel'
-      ).length;
-      const nameCount = items.filter((i) => getCreationKind(i) === 'name').length;
+      if (
+        this.memoGalleryItemsRef !== items ||
+        this.memoGalleryLength !== items.length ||
+        this.memoGalleryFilter !== this.galleryFilter ||
+        this.memoGalleryBypassFilter !== bypassFilter
+      ) {
+        this.memoGalleryItemsRef = items;
+        this.memoGalleryLength = items.length;
+        this.memoGalleryFilter = this.galleryFilter;
+        this.memoGalleryBypassFilter = bypassFilter;
+        let vessels = 0;
+        let names = 0;
+        for (let i = 0; i < items.length; i++) {
+          if (getCreationKind(items[i]) === 'name') names++;
+          else vessels++;
+        }
+        this.memoVesselCount = vessels;
+        this.memoNameCount = names;
+        this.memoVisibleItems = bypassFilter
+          ? items
+          : filterGalleryItems(items, this.galleryFilter);
+      }
+
+      const vesselCount = this.memoVesselCount;
+      const nameCount = this.memoNameCount;
+      const visibleItems = this.memoVisibleItems;
 
       for (const [fId, btn] of this.galleryFilterBtns.entries()) {
-        btn.label =
+        this.setLabel(
+          btn,
           fId === 'all'
             ? `All (${items.length})`
             : fId === 'vessel'
               ? `Pottery (${vesselCount})`
-              : `Names (${nameCount})`;
-        btn.style.backgroundColor =
-          this.galleryFilter === fId ? '#b84f33' : undefined;
-        btn.disabled = smashMode || isRestoring;
+              : `Names (${nameCount})`
+        );
+        this.setBg(btn, this.galleryFilter === fId ? '#b84f33' : undefined);
+        this.setDisabled(btn, smashMode || isRestoring);
       }
 
-      const visibleItems =
-        smashMode || isRestoring
-          ? items
-          : filterGalleryItems(items, this.galleryFilter);
       const totalPages = Math.max(
         1,
         Math.ceil(visibleItems.length / GALLERY_PAGE_SIZE)
@@ -2114,22 +2249,38 @@ export class VRStudioPanel extends THREE.Group {
       const selected =
         visibleItems.find((i) => i.id === state.selectedGalleryId) ??
         visibleItems[0] ??
-        (smashMode || isRestoring
-          ? items.find((i) => i.id === state.selectedGalleryId) ?? items[0] ?? null
+        (bypassFilter
+          ? items.find((i) => i.id === state.selectedGalleryId) ??
+            items[0] ??
+            null
           : null);
       this.currentSelectedGalleryId = selected?.id ?? null;
 
       if (selected) {
         const glaze = GLAZE_CATALOG.find((g) => g.id === selected.glazeId);
-        this.galleryItemTitle.text = `${selected.name} (${visibleItems.length}/${items.length} saved)`;
-        this.galleryItemMeta.text = formatGalleryItemMeta(selected, glaze?.name);
+        this.setText(
+          this.galleryItemTitle,
+          `${selected.name} (${visibleItems.length}/${items.length} saved)`
+        );
+        this.setText(
+          this.galleryItemMeta,
+          formatGalleryItemMeta(selected, glaze?.name)
+        );
       } else if (items.length === 0) {
-        this.galleryItemTitle.text = 'Studio Gallery (0)';
-        this.galleryItemMeta.text =
-          'No saved creations yet. Throw a vessel or sculpt a Clay Name and fire it!';
+        this.setText(this.galleryItemTitle, 'Studio Gallery (0)');
+        this.setText(
+          this.galleryItemMeta,
+          'No saved creations yet. Throw a vessel or sculpt a Clay Name and fire it!'
+        );
       } else {
-        this.galleryItemTitle.text = `Studio Gallery (${items.length} saved)`;
-        this.galleryItemMeta.text = `No ${this.galleryFilter === 'name' ? '3D clay names' : 'pottery vessels'} in this filter yet.`;
+        this.setText(
+          this.galleryItemTitle,
+          `Studio Gallery (${items.length} saved)`
+        );
+        this.setText(
+          this.galleryItemMeta,
+          `No ${this.galleryFilter === 'name' ? '3D clay names' : 'pottery vessels'} in this filter yet.`
+        );
       }
 
       const startIdx = this.galleryPage * GALLERY_PAGE_SIZE;
@@ -2140,73 +2291,91 @@ export class VRStudioPanel extends THREE.Group {
         this.setShown(btn, Boolean(item));
         if (item) {
           const tag = getCreationKind(item) === 'name' ? '[Name]' : '[Pot]';
-          btn.label = `${tag} ${item.name.slice(0, 11)}`;
-          btn.style.backgroundColor =
-            selected?.id === item.id ? '#b84f33' : undefined;
+          this.setLabel(btn, `${tag} ${item.name.slice(0, 11)}`);
+          this.setBg(btn, selected?.id === item.id ? '#b84f33' : undefined);
         }
       }
 
-      this.galleryPageLabel.text = `Page ${this.galleryPage + 1} / ${totalPages}`;
-      this.galleryPrevPageBtn.disabled = this.galleryPage <= 0;
-      this.galleryNextPageBtn.disabled = this.galleryPage >= totalPages - 1;
+      this.setText(
+        this.galleryPageLabel,
+        `Page ${this.galleryPage + 1} / ${totalPages}`
+      );
+      this.setDisabled(this.galleryPrevPageBtn, this.galleryPage <= 0);
+      this.setDisabled(
+        this.galleryNextPageBtn,
+        this.galleryPage >= totalPages - 1
+      );
 
       const hasSelected = Boolean(selected);
 
       if (isRestoring) {
-        this.galleryItemMeta.text =
-          'Time Stone active — reversing cracks & shards back into creations!';
+        this.setText(
+          this.galleryItemMeta,
+          'Time Stone active — reversing cracks & shards back into creations!'
+        );
       } else if (smashMode) {
         const focusLine = state.galleryFocusedName
           ? `Focus: ${state.galleryFocusedName} (${state.galleryFocusedHits}/2 hits)`
           : smashScope === 'single'
             ? `Selected: ${selected?.name ?? 'Piece'}`
             : 'Aim Quest hand or controller at a piece';
-        this.galleryItemMeta.text =
+        this.setText(
+          this.galleryItemMeta,
           smashedCount > 0
             ? `${focusLine} · ${crackedCount} cracked, ${smashedCount}/${totalVessels} broken · Restore or Exit (deletes broken)`
             : hasDamage
               ? `${focusLine} · ${crackedCount} cracked · Press Restore or hit again to break!`
               : smashScope === 'single'
                 ? `${focusLine} · Selected piece only · Hit 1 cracks, Hit 2 shatters!`
-                : `${focusLine} · All ${totalVessels} pieces · Hit 1 cracks, Hit 2 shatters!`;
+                : `${focusLine} · All ${totalVessels} pieces · Hit 1 cracks, Hit 2 shatters!`
+        );
       }
 
-      this.galleryEditBtn.disabled = !hasSelected || smashMode || isRestoring;
-      this.gallerySpinBtn.label = state.gallerySpinEnabled
-        ? 'Spin: On'
-        : 'Spin: Off';
-      this.gallerySpinBtn.style.backgroundColor = state.gallerySpinEnabled
-        ? '#4d6d43'
-        : undefined;
-      this.gallerySpinBtn.disabled = !hasSelected || smashMode;
-      this.galleryRotLeftBtn.disabled = !hasSelected || smashMode;
-      this.galleryRotRightBtn.disabled = !hasSelected || smashMode;
-      this.galleryExportBtn.disabled = !hasSelected || smashMode;
+      this.setDisabled(
+        this.galleryEditBtn,
+        !hasSelected || smashMode || isRestoring
+      );
+      this.setLabel(
+        this.gallerySpinBtn,
+        state.gallerySpinEnabled ? 'Spin: On' : 'Spin: Off'
+      );
+      this.setBg(
+        this.gallerySpinBtn,
+        state.gallerySpinEnabled ? '#4d6d43' : undefined
+      );
+      this.setDisabled(this.gallerySpinBtn, !hasSelected || smashMode);
+      this.setDisabled(this.galleryRotLeftBtn, !hasSelected || smashMode);
+      this.setDisabled(this.galleryRotRightBtn, !hasSelected || smashMode);
+      this.setDisabled(this.galleryExportBtn, !hasSelected || smashMode);
 
-      this.gallerySmashBtn.label = smashMode
-        ? smashedCount > 0
-          ? `Exit (Del ${smashedCount})`
-          : 'Exit Bat'
-        : 'Smash (Bat)';
-      this.gallerySmashBtn.style.backgroundColor = smashMode
-        ? '#c46d29'
-        : undefined;
-      this.gallerySmashBtn.disabled = !hasSelected || isRestoring;
+      this.setLabel(
+        this.gallerySmashBtn,
+        smashMode
+          ? smashedCount > 0
+            ? `Exit (Del ${smashedCount})`
+            : 'Exit Bat'
+          : 'Smash (Bat)'
+      );
+      this.setBg(this.gallerySmashBtn, smashMode ? '#c46d29' : undefined);
+      this.setDisabled(this.gallerySmashBtn, !hasSelected || isRestoring);
 
-      this.gallerySmashAllBtn.label = `Smash All (${items.length})`;
-      this.gallerySmashAllBtn.disabled =
+      this.setLabel(this.gallerySmashAllBtn, `Smash All (${items.length})`);
+      this.setDisabled(
+        this.gallerySmashAllBtn,
         items.length === 0 ||
-        isRestoring ||
-        (smashMode && smashScope === 'all' && intactInView === 0);
+          isRestoring ||
+          (smashMode && smashScope === 'all' && intactInView === 0)
+      );
 
       const showRestore = hasDamage || isRestoring;
       this.setShown(this.galleryRestoreBtn, showRestore);
-      this.galleryRestoreBtn.label = isRestoring
-        ? 'Reversing…'
-        : 'Restore (Time)';
-      this.galleryRestoreBtn.disabled = isRestoring;
+      this.setLabel(
+        this.galleryRestoreBtn,
+        isRestoring ? 'Reversing…' : 'Restore (Time)'
+      );
+      this.setDisabled(this.galleryRestoreBtn, isRestoring);
 
-      this.galleryDeleteBtn.disabled = !hasSelected || isRestoring;
+      this.setDisabled(this.galleryDeleteBtn, !hasSelected || isRestoring);
     }
 
     // Settings live state
@@ -2219,30 +2388,33 @@ export class VRStudioPanel extends THREE.Group {
       if (Math.abs(this.lastSetSens - s.handSensitivity) > 0.01) {
         this.lastSetSens = s.handSensitivity;
         this.setSensSlider.value = s.handSensitivity;
-        this.setSensVal.text = s.handSensitivity.toFixed(1);
+        this.setText(this.setSensVal, s.handSensitivity.toFixed(1));
       }
       if (Math.abs(this.lastSetWheel - s.wheelSpeed) > 0.01) {
         this.lastSetWheel = s.wheelSpeed;
         this.setWheelSlider.value = s.wheelSpeed;
-        this.setWheelVal.text = `${s.wheelSpeed.toFixed(1)}x`;
+        this.setText(this.setWheelVal, `${s.wheelSpeed.toFixed(1)}x`);
       }
       if (Math.abs(this.lastSetMusic - s.musicVolume) > 0.01) {
         this.lastSetMusic = s.musicVolume;
         this.setMusicSlider.value = s.musicVolume;
-        this.setMusicVal.text = `${Math.round(s.musicVolume * 100)}%`;
+        this.setText(this.setMusicVal, `${Math.round(s.musicVolume * 100)}%`);
       }
       if (Math.abs(this.lastSetSfx - s.sfxVolume) > 0.01) {
         this.lastSetSfx = s.sfxVolume;
         this.setSfxSlider.value = s.sfxVolume;
-        this.setSfxVal.text = `${Math.round(s.sfxVolume * 100)}%`;
+        this.setText(this.setSfxVal, `${Math.round(s.sfxVolume * 100)}%`);
       }
 
-      this.setSoundBtn.label = s.soundEnabled ? 'Sound: On' : 'Sound: Off';
-      this.setMotionBtn.label = s.reducedMotion
-        ? 'Motion: Reduced'
-        : 'Motion: Full';
-      this.setHandBtn.label =
-        s.handedness === 'right' ? 'Hand: Right' : 'Hand: Left';
+      this.setLabel(this.setSoundBtn, s.soundEnabled ? 'Sound: On' : 'Sound: Off');
+      this.setLabel(
+        this.setMotionBtn,
+        s.reducedMotion ? 'Motion: Reduced' : 'Motion: Full'
+      );
+      this.setLabel(
+        this.setHandBtn,
+        s.handedness === 'right' ? 'Hand: Right' : 'Hand: Left'
+      );
     }
   }
 }

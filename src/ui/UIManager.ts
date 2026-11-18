@@ -208,6 +208,15 @@ export class UIManager {
     this.resetConfirmVisible = visible;
   }
 
+  private escapeHtml(value: string): string {
+    return value
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;');
+  }
+
   public showCelebration(visible: boolean): void {
     this.showCelebrationBanner = visible;
   }
@@ -1900,9 +1909,11 @@ export class UIManager {
       this.customPotName = personality.name;
     }
 
-    const creationTitle = isName
-      ? `${hud.clayNameText.trim() || 'Hand-Written Clay'} Nameplate`
-      : personality?.name ?? 'Studio Vessel';
+    const creationTitle = this.escapeHtml(
+      isName
+        ? `${hud.clayNameText.trim() || 'Hand-Written Clay'} Nameplate`
+        : personality?.name ?? 'Studio Vessel'
+    );
 
     const initialDesc =
       hud.inputMode === 'webcam' || hud.inputMode === 'webxr'
@@ -2089,6 +2100,7 @@ export class UIManager {
       hud.activeCreationKind === 'name'
         ? `${hud.clayNameText.trim() || 'Hand-Written Clay'} Nameplate`
         : this.customPotName || hud.personality?.name || 'Studio Vessel';
+    const safeDefaultName = this.escapeHtml(defaultName);
 
     el.innerHTML = `
       <div class="hud-top-row">
@@ -2126,7 +2138,7 @@ export class UIManager {
                    <label class="dock-label" for="vessel-name-input">${
                      hud.activeCreationKind === 'name' ? 'Nameplate Title' : 'Vessel Name'
                    }</label>
-                   <input id="vessel-name-input" class="text-input" type="text" maxlength="40" value="${defaultName}" />
+                   <input id="vessel-name-input" class="text-input" type="text" maxlength="40" value="${safeDefaultName}" />
                  </div>
                  <div class="dock-actions">
                    <button class="btn btn-primary" id="btn-save-gal" ${hud.saveStatus.saved ? 'disabled' : ''}>
@@ -2210,16 +2222,21 @@ export class UIManager {
       items.length === 0 ||
       (smashMode && smashScope === 'all' && intactCount === 0);
 
+    const safeFocused = hud.galleryFocusedName
+      ? this.escapeHtml(hud.galleryFocusedName)
+      : null;
+    const safeSelectedName = selected ? this.escapeHtml(selected.name) : null;
+
     let subtitleText =
       'Your fired pottery vessels and 3D clay names live together here.';
     if (isRestoring) {
       subtitleText =
         'Time Stone active — reversing time to restore cracked & shattered creations!';
     } else if (smashMode) {
-      const targetSummary = hud.galleryFocusedName
+      const targetSummary = safeFocused
         ? hud.galleryFocusedHits >= 1
-          ? `Target: ${hud.galleryFocusedName} (Cracked 1/2 — hit once more to shatter!)`
-          : `Target: ${hud.galleryFocusedName} (Intact 0/2 — Hit 1 cracks, Hit 2 shatters)`
+          ? `Target: ${safeFocused} (Cracked 1/2 — hit once more to shatter!)`
+          : `Target: ${safeFocused} (Intact 0/2 — Hit 1 cracks, Hit 2 shatters)`
         : smashedCount > 0 && intactCount === 0
           ? 'Shattered! Press Restore to rewind time, or Exit to delete.'
           : 'Move Meta Quest hand/bat onto any piece to focus (pointer fallback).';
@@ -2236,7 +2253,7 @@ export class UIManager {
       const glazeName =
         GLAZE_CATALOG.find((g) => g.id === selected.glazeId)?.name ??
         selected.glazeId;
-      subtitleText = `${formatGalleryItemMeta(selected, glazeName)} · Drag scene to inspect`;
+      subtitleText = `${this.escapeHtml(formatGalleryItemMeta(selected, glazeName))} · Drag scene to inspect`;
     }
 
     const el = document.createElement('div');
@@ -2255,14 +2272,12 @@ export class UIManager {
           }</p>
           <h2 class="compact-title">${
             smashMode
-              ? hud.galleryFocusedName
-                ? `Focus: ${hud.galleryFocusedName} (${hud.galleryFocusedHits}/2)`
+              ? safeFocused
+                ? `Focus: ${safeFocused} (${hud.galleryFocusedHits}/2)`
                 : smashScope === 'all' && totalVessels > 1
                   ? `All ${totalVessels} Creations Spaced Safely`
-                  : selected?.name ?? 'Studio Gallery'
-              : selected
-                ? selected.name
-                : 'Studio Gallery'
+                  : safeSelectedName ?? 'Studio Gallery'
+              : safeSelectedName ?? 'Studio Gallery'
           }</h2>
           <p class="gesture-desc">${subtitleText}</p>
         </div>
@@ -2310,11 +2325,13 @@ export class UIManager {
                               );
                               const active = selected?.id === item.id;
                               const kind = getCreationKind(item);
+                              const safeItemName = this.escapeHtml(item.name);
+                              const safeItemId = this.escapeHtml(item.id);
                               return `
-                                <button class="gallery-chip ${active ? 'gallery-chip-active' : ''}" data-gal-id="${item.id}">
+                                <button class="gallery-chip ${active ? 'gallery-chip-active' : ''}" data-gal-id="${safeItemId}">
                                   <span class="swatch-dot" style="background: ${glaze?.color ?? '#b85d41'}"></span>
                                   <span class="gallery-chip-info">
-                                    <strong>${item.name}</strong>
+                                    <strong>${safeItemName}</strong>
                                     <span class="gallery-chip-meta-row">
                                       <span class="gallery-kind-badge ${kind === 'name' ? 'gallery-kind-name' : 'gallery-kind-vessel'}">${kind === 'name' ? 'Clay Name' : 'Pottery'}</span>
                                       <small>${new Date(item.createdAt).toLocaleDateString()}</small>
@@ -2330,7 +2347,7 @@ export class UIManager {
                    selected
                      ? `<div class="gallery-item-actions">
                           <button class="btn btn-small btn-primary" id="btn-gal-edit" ${smashMode || isRestoring ? 'disabled' : ''}>Open in Studio</button>
-                          <input id="gal-rename-input" class="text-input" type="text" maxlength="40" value="${selected.name}" ${smashMode ? 'disabled' : ''} />
+                          <input id="gal-rename-input" class="text-input" type="text" maxlength="40" value="${safeSelectedName ?? ''}" ${smashMode ? 'disabled' : ''} />
                           <button class="btn btn-small btn-secondary" id="btn-gal-rename" ${smashMode ? 'disabled' : ''}>Rename</button>
                           <button class="btn btn-small btn-secondary" id="btn-gal-glb" ${smashMode ? 'disabled' : ''}>Export GLB</button>
                           <button class="btn btn-small ${smashMode ? 'btn-smash-active' : 'btn-smash'}" id="btn-gal-smash" ${isRestoring ? 'disabled' : ''}>

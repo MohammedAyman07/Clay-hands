@@ -1117,3 +1117,78 @@ test('StateManager defaults to hands-first inputMode (webcam, never mouse)', asy
   assert.notEqual(state.inputMode, 'mouse');
 });
 
+test('KilnController.cancel aborts firing cleanly without triggering transform/complete', async () => {
+  const THREE = await import('three');
+  const { KilnController } = await import('../src/kiln/KilnController.ts');
+  const kiln = new KilnController();
+  const vessel = new THREE.Mesh(
+    new THREE.BoxGeometry(0.1, 0.1, 0.1),
+    new THREE.MeshBasicMaterial()
+  );
+
+  let transformed = false;
+  let completed = false;
+  kiln.startFiring(
+    vessel,
+    () => {
+      transformed = true;
+    },
+    () => {
+      completed = true;
+    }
+  );
+
+  const mid = kiln.update(1.5);
+  assert.notEqual(mid.phase, 'idle');
+
+  kiln.cancel();
+  const afterCancel = kiln.update(5.0);
+  assert.equal(afterCancel.phase, 'idle');
+  assert.equal(afterCancel.progress, 0);
+  assert.equal(transformed, false);
+  assert.equal(completed, false);
+});
+
+test('ClayNameGeometry.getCachedShapeXY matches mapGridToPlaqueXY across plaque shapes', async () => {
+  const { ClayNameGeometry, mapGridToPlaqueXY } = await import(
+    '../src/names/ClayNameGeometry.ts'
+  );
+  const geom = new ClayNameGeometry();
+  const shapes = ['tablet', 'oval', 'ribbon', 'heart'] as const;
+
+  for (const shape of shapes) {
+    const cached = geom.getCachedShapeXY(shape);
+    assert.equal(cached.x.length, geom.cols * geom.rows);
+    assert.equal(cached.y.length, geom.cols * geom.rows);
+
+    for (let r = 0; r < geom.rows; r += 9) {
+      for (let c = 0; c < geom.cols; c += 17) {
+        const uNorm = (c / (geom.cols - 1)) * 2 - 1;
+        const vNorm = (r / (geom.rows - 1)) * 2 - 1;
+        const expected = mapGridToPlaqueXY(uNorm, vNorm, shape);
+        const idx = r * geom.cols + c;
+        assert.ok(Math.abs(cached.x[idx] - expected.x) < 1e-5);
+        assert.ok(Math.abs(cached.y[idx] - expected.y) < 1e-5);
+      }
+    }
+  }
+
+  geom.dispose();
+});
+
+test('ClayDeformer smooth & enforceSmoothGradient remain deterministic with pooled scratch buffers', () => {
+  const p1 = createInitialClayProfile();
+  const p2 = createInitialClayProfile();
+  p1.outerRadii[12] += 0.03;
+  p2.outerRadii[12] += 0.03;
+
+  ClayDeformer.smooth(p1, { heightNorm: 0.5, strength: 0.7, dt: 0.25 });
+  ClayDeformer.smooth(p2, { heightNorm: 0.5, strength: 0.7, dt: 0.25 });
+
+  for (let i = 0; i < p1.ringCount; i++) {
+    assert.ok(Number.isFinite(p1.outerRadii[i]));
+    assert.ok(Math.abs(p1.outerRadii[i] - p2.outerRadii[i]) < 1e-12);
+  }
+});
+
+

@@ -13,6 +13,8 @@ import type {
 } from '../types.ts';
 
 const LOCAL_WASM_PATH = '/mediapipe/wasm';
+const FALLBACK_WASM_URL =
+  'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.34/wasm';
 const LOCAL_MODEL_PATH = '/mediapipe/hand_landmarker.task';
 const FALLBACK_MODEL_URL =
   'https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task';
@@ -210,26 +212,53 @@ export class HandTracker {
     }
   }
 
+  private async isWasmAssetValid(url: string): Promise<boolean> {
+    try {
+      const res = await fetch(url, { method: 'HEAD' });
+      if (!res.ok) return false;
+      const contentType = (res.headers.get('content-type') ?? '').toLowerCase();
+      return !contentType.includes('text/html');
+    } catch {
+      return false;
+    }
+  }
+
   private async createLandmarker(): Promise<HandLandmarker> {
-    const vision = await FilesetResolver.forVisionTasks(LOCAL_WASM_PATH);
+    const wasmPaths = [LOCAL_WASM_PATH, FALLBACK_WASM_URL];
     const modelPaths = [LOCAL_MODEL_PATH, FALLBACK_MODEL_URL];
 
-    for (const modelAssetPath of modelPaths) {
-      for (const delegate of ['GPU', 'CPU'] as const) {
-        try {
-          return await HandLandmarker.createFromOptions(vision, {
-            baseOptions: {
-              modelAssetPath,
-              delegate,
-            },
-            runningMode: 'VIDEO',
-            numHands: 2,
-            minHandDetectionConfidence: 0.5,
-            minHandPresenceConfidence: 0.5,
-            minTrackingConfidence: 0.5,
-          });
-        } catch {
-          // Try next delegate or fallback model URL
+    for (const wasmBase of wasmPaths) {
+      let vision;
+      try {
+        vision = await FilesetResolver.forVisionTasks(wasmBase);
+        if (
+          vision.wasmBinaryPath &&
+          wasmBase === LOCAL_WASM_PATH &&
+          !(await this.isWasmAssetValid(vision.wasmBinaryPath))
+        ) {
+          continue;
+        }
+      } catch {
+        continue;
+      }
+
+      for (const modelAssetPath of modelPaths) {
+        for (const delegate of ['GPU', 'CPU'] as const) {
+          try {
+            return await HandLandmarker.createFromOptions(vision, {
+              baseOptions: {
+                modelAssetPath,
+                delegate,
+              },
+              runningMode: 'VIDEO',
+              numHands: 2,
+              minHandDetectionConfidence: 0.5,
+              minHandPresenceConfidence: 0.5,
+              minTrackingConfidence: 0.5,
+            });
+          } catch {
+            // Try next delegate, model URL, or WASM source
+          }
         }
       }
     }

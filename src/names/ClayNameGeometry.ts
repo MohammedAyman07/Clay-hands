@@ -338,6 +338,14 @@ export class ClayNameGeometry {
   private readonly positions: Float32Array;
   private readonly uvs: Float32Array;
 
+  private readonly shapeX: Float32Array;
+  private readonly shapeY: Float32Array;
+  private readonly shapeU: Float32Array;
+  private readonly shapeV: Float32Array;
+  private readonly shapeEdgeBevel: Float32Array;
+  private readonly shapeRimBead: Float32Array;
+  private cachedGridShape: ClayNamePlaqueShape | '' = '';
+
   private cachedText = '';
   private cachedShape: ClayNamePlaqueShape | '' = '';
   private cachedBoldness = -1;
@@ -354,6 +362,13 @@ export class ClayNameGeometry {
     this.baseLetterHeight = new Float32Array(faceCount);
     this.positions = new Float32Array(totalVerts * 3);
     this.uvs = new Float32Array(totalVerts * 2);
+
+    this.shapeX = new Float32Array(faceCount);
+    this.shapeY = new Float32Array(faceCount);
+    this.shapeU = new Float32Array(faceCount);
+    this.shapeV = new Float32Array(faceCount);
+    this.shapeEdgeBevel = new Float32Array(faceCount);
+    this.shapeRimBead = new Float32Array(faceCount);
 
     this.geometry = new THREE.BufferGeometry();
     const posAttr = new THREE.BufferAttribute(this.positions, 3);
@@ -422,6 +437,77 @@ export class ClayNameGeometry {
     this.geometry.setIndex(indices);
   }
 
+  public getCachedShapeXY(shape: ClayNamePlaqueShape): {
+    x: Float32Array;
+    y: Float32Array;
+  } {
+    this.ensureShapeCache(shape);
+    return { x: this.shapeX, y: this.shapeY };
+  }
+
+  private ensureShapeCache(shape: ClayNamePlaqueShape): boolean {
+    if (this.cachedGridShape === shape) return false;
+    this.cachedGridShape = shape;
+
+    const { cols, rows, positions, uvs } = this;
+    const faceCount = cols * rows;
+    const backZ = -0.013;
+
+    for (let iy = 0; iy < rows; iy++) {
+      const vNorm = (iy / (rows - 1)) * 2 - 1;
+      for (let ix = 0; ix < cols; ix++) {
+        const uNorm = (ix / (cols - 1)) * 2 - 1;
+        const idx = iy * cols + ix;
+
+        const { x, y, edgeFactor } = mapGridToPlaqueXY(
+          uNorm,
+          vNorm,
+          shape,
+          NAME_PLAQUE_WIDTH,
+          NAME_PLAQUE_HEIGHT
+        );
+
+        const u = THREE.MathUtils.clamp(x / NAME_PLAQUE_WIDTH + 0.5, 0.01, 0.99);
+        const v = THREE.MathUtils.clamp(y / NAME_PLAQUE_HEIGHT + 0.5, 0.01, 0.99);
+
+        const edgeBevel =
+          edgeFactor > 0.91
+            ? Math.max(0.18, 1 - Math.pow((edgeFactor - 0.91) / 0.09, 1.5) * 0.82)
+            : 1;
+        const rimBeadDist = Math.abs(edgeFactor - 0.87) / 0.045;
+        const rimBead =
+          rimBeadDist < 1
+            ? Math.cos(rimBeadDist * Math.PI * 0.5) * 0.0042
+            : 0;
+
+        this.shapeX[idx] = x;
+        this.shapeY[idx] = y;
+        this.shapeU[idx] = u;
+        this.shapeV[idx] = v;
+        this.shapeEdgeBevel[idx] = edgeBevel;
+        this.shapeRimBead[idx] = rimBead;
+
+        const fPosOff = idx * 3;
+        positions[fPosOff] = x;
+        positions[fPosOff + 1] = y;
+
+        const bPosOff = (faceCount + idx) * 3;
+        positions[bPosOff] = x;
+        positions[bPosOff + 1] = y;
+        positions[bPosOff + 2] = backZ;
+
+        const uvOff = idx * 2;
+        uvs[uvOff] = u;
+        uvs[uvOff + 1] = v;
+
+        const bUvOff = (faceCount + idx) * 2;
+        uvs[bUvOff] = u;
+        uvs[bUvOff + 1] = v;
+      }
+    }
+    return true;
+  }
+
   public updateFromState(state: ClayNameState): void {
     const cleanText = state.text.trim().slice(0, 16);
     const isBlank = cleanText.length === 0;
@@ -442,111 +528,69 @@ export class ClayNameGeometry {
       this.cachedShape = ''; // trigger SDF sampling refresh
     }
 
+    const shapeChanged = this.ensureShapeCache(state.plaqueShape);
     const needResampleBase =
       !isBlank &&
       (this.cachedShape !== state.plaqueShape ||
         Math.abs(this.cachedBoldness - state.letterBoldness) > 0.001);
 
-    const { cols, rows, positions, uvs } = this;
+    const { cols, rows, positions } = this;
     const faceCount = cols * rows;
     const sdf = this.cachedSdf;
     const boldnessShift = (state.letterBoldness - 1.0) * 2.2;
     const backZ = -0.013;
+    const minFrontZ = backZ + 0.005;
     const baseFrontZ = 0.012;
+    const relief = state.letterRelief;
+    const sculptDeltas = state.sculptDeltas;
 
-    for (let iy = 0; iy < rows; iy++) {
-      const vNorm = (iy / (rows - 1)) * 2 - 1;
-      for (let ix = 0; ix < cols; ix++) {
-        const uNorm = (ix / (cols - 1)) * 2 - 1;
-        const idx = iy * cols + ix;
-
-        const { x, y, edgeFactor } = mapGridToPlaqueXY(
-          uNorm,
-          vNorm,
-          state.plaqueShape,
-          NAME_PLAQUE_WIDTH,
-          NAME_PLAQUE_HEIGHT
+    for (let idx = 0; idx < faceCount; idx++) {
+      if (needResampleBase && sdf) {
+        const u = this.shapeU[idx];
+        const v = this.shapeV[idx];
+        const sx = THREE.MathUtils.clamp(
+          u * (this.sdfWidth - 1),
+          0,
+          this.sdfWidth - 1
+        );
+        const sy = THREE.MathUtils.clamp(
+          (1 - v) * (this.sdfHeight - 1),
+          0,
+          this.sdfHeight - 1
+        );
+        const x0 = Math.floor(sx);
+        const y0 = Math.floor(sy);
+        const x1 = Math.min(this.sdfWidth - 1, x0 + 1);
+        const y1 = Math.min(this.sdfHeight - 1, y0 + 1);
+        const fx = sx - x0;
+        const fy = sy - y0;
+        const d00 = sdf[y0 * this.sdfWidth + x0];
+        const d10 = sdf[y0 * this.sdfWidth + x1];
+        const d01 = sdf[y1 * this.sdfWidth + x0];
+        const d11 = sdf[y1 * this.sdfWidth + x1];
+        const d = THREE.MathUtils.lerp(
+          THREE.MathUtils.lerp(d00, d10, fx),
+          THREE.MathUtils.lerp(d01, d11, fx),
+          fy
         );
 
-        // Normalized physical UV matching 2D painting canvas (top-to-bottom canvas V flipped)
-        const u = THREE.MathUtils.clamp(x / NAME_PLAQUE_WIDTH + 0.5, 0.01, 0.99);
-        const v = THREE.MathUtils.clamp(y / NAME_PLAQUE_HEIGHT + 0.5, 0.01, 0.99);
-
-        if (needResampleBase && sdf) {
-          // Sample SDF at physical normalized coordinates so text never distorts across shapes
-          const sx = THREE.MathUtils.clamp(
-            u * (this.sdfWidth - 1),
-            0,
-            this.sdfWidth - 1
-          );
-          const sy = THREE.MathUtils.clamp(
-            (1 - v) * (this.sdfHeight - 1),
-            0,
-            this.sdfHeight - 1
-          );
-          const x0 = Math.floor(sx);
-          const y0 = Math.floor(sy);
-          const x1 = Math.min(this.sdfWidth - 1, x0 + 1);
-          const y1 = Math.min(this.sdfHeight - 1, y0 + 1);
-          const fx = sx - x0;
-          const fy = sy - y0;
-          const d00 = sdf[y0 * this.sdfWidth + x0];
-          const d10 = sdf[y0 * this.sdfWidth + x1];
-          const d01 = sdf[y1 * this.sdfWidth + x0];
-          const d11 = sdf[y1 * this.sdfWidth + x1];
-          const d = THREE.MathUtils.lerp(
-            THREE.MathUtils.lerp(d00, d10, fx),
-            THREE.MathUtils.lerp(d01, d11, fx),
-            fy
-          );
-
-          // Plump rounded coil profile: smooth dome rising smoothly inside letter stroke
-          const shifted = d + boldnessShift;
-          const normDist = THREE.MathUtils.clamp((shifted + 1.1) / 5.4, 0, 1);
-          const dome =
-            normDist <= 0
-              ? 0
-              : Math.sqrt(Math.max(0, 1 - Math.pow(1 - normDist, 2))) * 0.92 +
-                normDist * 0.08;
-          this.baseLetterHeight[idx] = dome;
-        }
-
-        // Hand-chamfered clay plaque edge + subtle artisanal border rim bead
-        const edgeBevel =
-          edgeFactor > 0.91
-            ? Math.max(0.18, 1 - Math.pow((edgeFactor - 0.91) / 0.09, 1.5) * 0.82)
-            : 1;
-        const rimBeadDist = Math.abs(edgeFactor - 0.87) / 0.045;
-        const rimBead =
-          rimBeadDist < 1
-            ? Math.cos(rimBeadDist * Math.PI * 0.5) * 0.0042
-            : 0;
-
-        const letterZ = this.baseLetterHeight[idx] * state.letterRelief;
-        const userDelta = state.sculptDeltas[idx] ?? 0;
-        const frontZ = Math.max(
-          backZ + 0.005,
-          baseFrontZ * edgeBevel + (letterZ + rimBead + userDelta) * edgeBevel
-        );
-
-        const fPosOff = idx * 3;
-        positions[fPosOff] = x;
-        positions[fPosOff + 1] = y;
-        positions[fPosOff + 2] = frontZ;
-
-        const bPosOff = (faceCount + idx) * 3;
-        positions[bPosOff] = x;
-        positions[bPosOff + 1] = y;
-        positions[bPosOff + 2] = backZ;
-
-        const uvOff = idx * 2;
-        uvs[uvOff] = u;
-        uvs[uvOff + 1] = v;
-
-        const bUvOff = (faceCount + idx) * 2;
-        uvs[bUvOff] = u;
-        uvs[bUvOff + 1] = v;
+        const shifted = d + boldnessShift;
+        const normDist = THREE.MathUtils.clamp((shifted + 1.1) / 5.4, 0, 1);
+        const dome =
+          normDist <= 0
+            ? 0
+            : Math.sqrt(Math.max(0, 1 - Math.pow(1 - normDist, 2))) * 0.92 +
+              normDist * 0.08;
+        this.baseLetterHeight[idx] = dome;
       }
+
+      const edgeBevel = this.shapeEdgeBevel[idx];
+      const rimBead = this.shapeRimBead[idx];
+      const letterZ = this.baseLetterHeight[idx] * relief;
+      const userDelta = sculptDeltas[idx] ?? 0;
+      const rawFrontZ =
+        baseFrontZ * edgeBevel + (letterZ + rimBead + userDelta) * edgeBevel;
+      positions[idx * 3 + 2] = rawFrontZ > minFrontZ ? rawFrontZ : minFrontZ;
     }
 
     this.cachedShape = state.plaqueShape;
@@ -554,10 +598,12 @@ export class ClayNameGeometry {
 
     (this.geometry.attributes.position as THREE.BufferAttribute).needsUpdate =
       true;
-    (this.geometry.attributes.uv as THREE.BufferAttribute).needsUpdate = true;
+    if (shapeChanged) {
+      (this.geometry.attributes.uv as THREE.BufferAttribute).needsUpdate = true;
+      this.geometry.computeBoundingSphere();
+      this.geometry.computeBoundingBox();
+    }
     this.geometry.computeVertexNormals();
-    this.geometry.computeBoundingSphere();
-    this.geometry.computeBoundingBox();
   }
 
   public dispose(): void {

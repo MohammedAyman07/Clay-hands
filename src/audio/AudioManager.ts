@@ -106,9 +106,12 @@ export class AudioManager {
   // Continuous wheel & clay shaping nodes
   private wheelOsc: OscillatorNode | null = null;
   private wheelGain: GainNode | null = null;
+  private claySource: AudioBufferSourceNode | null = null;
   private clayFilter: BiquadFilterNode | null = null;
   private clayGain: GainNode | null = null;
+  private kilnSource: AudioBufferSourceNode | null = null;
   private kilnFireGain: GainNode | null = null;
+  private cachedSfxNoiseBuffer: AudioBuffer | null = null;
 
   private musicTimer: number | null = null;
   private musicStep = 0;
@@ -267,12 +270,14 @@ export class AudioManager {
     this.wheelGain.connect(this.sfxGain);
     this.wheelOsc.start();
 
-    // 2. Wet clay shaping friction loop
+    // 2. Wet clay shaping friction loop (and cached 1s noise buffer for transient SFX)
     const noiseBuf = this.createNoiseBuffer(2);
     if (noiseBuf) {
+      this.cachedSfxNoiseBuffer = noiseBuf;
       const claySource = this.ctx.createBufferSource();
       claySource.buffer = noiseBuf;
       claySource.loop = true;
+      this.claySource = claySource;
 
       this.clayFilter = this.ctx.createBiquadFilter();
       this.clayFilter.type = 'bandpass';
@@ -291,6 +296,7 @@ export class AudioManager {
       const kilnSource = this.ctx.createBufferSource();
       kilnSource.buffer = noiseBuf;
       kilnSource.loop = true;
+      this.kilnSource = kilnSource;
 
       const kilnFilter = this.ctx.createBiquadFilter();
       kilnFilter.type = 'lowpass';
@@ -589,7 +595,9 @@ export class AudioManager {
     this.lastBrushSoundAt = nowMs;
 
     const now = this.ctx.currentTime;
-    const buf = this.createNoiseBuffer(0.12);
+    const buf =
+      this.cachedSfxNoiseBuffer ??
+      (this.cachedSfxNoiseBuffer = this.createNoiseBuffer(2));
     if (!buf) return;
     const src = this.ctx.createBufferSource();
     src.buffer = buf;
@@ -670,7 +678,9 @@ export class AudioManager {
   public playBatSwing(intensity = 0.85): void {
     if (!this.ctx || !this.sfxGain || !this.enabled) return;
     const now = this.ctx.currentTime;
-    const buf = this.createNoiseBuffer(0.24);
+    const buf =
+      this.cachedSfxNoiseBuffer ??
+      (this.cachedSfxNoiseBuffer = this.createNoiseBuffer(2));
     if (!buf) return;
 
     const src = this.ctx.createBufferSource();
@@ -715,7 +725,9 @@ export class AudioManager {
     tapOsc.stop(now + 0.075);
 
     // Sharp brittle fracture crack noise snap
-    const noiseBuf = this.createNoiseBuffer(0.14);
+    const noiseBuf =
+      this.cachedSfxNoiseBuffer ??
+      (this.cachedSfxNoiseBuffer = this.createNoiseBuffer(2));
     if (noiseBuf) {
       const noiseSrc = this.ctx.createBufferSource();
       noiseSrc.buffer = noiseBuf;
@@ -771,7 +783,9 @@ export class AudioManager {
     crackOsc.start(now);
     crackOsc.stop(now + 0.12);
 
-    const noiseBuf = this.createNoiseBuffer(0.35);
+    const noiseBuf =
+      this.cachedSfxNoiseBuffer ??
+      (this.cachedSfxNoiseBuffer = this.createNoiseBuffer(2));
     if (noiseBuf) {
       const noiseSrc = this.ctx.createBufferSource();
       noiseSrc.buffer = noiseBuf;
@@ -891,10 +905,26 @@ export class AudioManager {
       clearInterval(this.musicTimer);
       this.musicTimer = null;
     }
-    this.wheelOsc?.stop();
+    try {
+      this.wheelOsc?.stop();
+    } catch {
+      /* already stopped */
+    }
+    try {
+      this.claySource?.stop();
+    } catch {
+      /* already stopped */
+    }
+    try {
+      this.kilnSource?.stop();
+    } catch {
+      /* already stopped */
+    }
+    this.cachedSfxNoiseBuffer = null;
     if (this.ctx) {
       void this.ctx.close();
       this.ctx = null;
     }
+    this.unlocked = false;
   }
 }

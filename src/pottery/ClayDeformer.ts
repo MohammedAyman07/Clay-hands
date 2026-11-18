@@ -28,6 +28,26 @@ function gaussianWeight(distance: number, sigma: number): number {
  * Designed to avoid spikes, holes, and self-intersections.
  */
 export class ClayDeformer {
+  private static scratchOuter = new Float32Array(64);
+  private static scratchGrad = new Float32Array(64);
+
+  private static copyOuterToScratch(
+    outerRadii: number[],
+    count: number,
+    isGrad: boolean
+  ): Float32Array {
+    let buf = isGrad ? ClayDeformer.scratchGrad : ClayDeformer.scratchOuter;
+    if (buf.length < count) {
+      buf = new Float32Array(count);
+      if (isGrad) ClayDeformer.scratchGrad = buf;
+      else ClayDeformer.scratchOuter = buf;
+    }
+    for (let i = 0; i < count; i++) {
+      buf[i] = outerRadii[i];
+    }
+    return buf;
+  }
+
   /** Center the clay mound (reduces wobble and balances outer profile). */
   public static centerClay(profile: ClayProfileState, params: DeformParams): void {
     const rate = clamp(params.strength * params.dt * 1.4, 0, 0.35);
@@ -205,8 +225,12 @@ export class ClayDeformer {
     const S = profile.angularSegments;
     const alpha = clamp(params.strength * params.dt * 1.35, 0, 0.28);
 
-    // Copy current radii for Laplacian pass
-    const copyOuter = [...profile.outerRadii];
+    // Copy current radii into pooled scratch buffer for Laplacian pass
+    const copyOuter = ClayDeformer.copyOuterToScratch(
+      profile.outerRadii,
+      R,
+      false
+    );
     for (let i = 1; i < R - 1; i++) {
       const avg = (copyOuter[i - 1] + copyOuter[i] * 2 + copyOuter[i + 1]) * 0.25;
       profile.outerRadii[i] = clamp(
@@ -267,7 +291,7 @@ export class ClayDeformer {
     blend: number
   ): void {
     const R = profile.ringCount;
-    const prev = [...profile.outerRadii];
+    const prev = ClayDeformer.copyOuterToScratch(profile.outerRadii, R, true);
     for (let i = 1; i < R - 1; i++) {
       const neighborAvg = (prev[i - 1] + prev[i + 1]) * 0.5;
       profile.outerRadii[i] = clamp(

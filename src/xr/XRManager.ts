@@ -49,8 +49,68 @@ export class XRManager {
   private readonly _batThumbTip = new THREE.Vector3();
   private readonly _prevVRBatPos = new THREE.Vector3();
   private readonly _ctrlQuat = new THREE.Quaternion();
+  private readonly _alignHeadPos = new THREE.Vector3();
+  private readonly _alignForward = new THREE.Vector3();
+  private readonly _alignRight = new THREE.Vector3();
+  private readonly _ctrlLocalVec: Vec3 = { x: 0, y: 0, z: 0 };
+  private readonly _ctrlWorldTipVec: Vec3 = { x: 0, y: 0, z: 0 };
+  private readonly _ctrlVelVec: Vec3 = { x: 0, y: 0, z: 0 };
+  private readonly handPool: Record<'left' | 'right', SmoothedHand> = {
+    left: XRManager.createPooledHand('left'),
+    right: XRManager.createPooledHand('right'),
+  };
+  private readonly tempHands: SmoothedHand[] = [];
+  private readonly tempSeen = new Set<'left' | 'right'>();
+  private readonly tempCalibration: CalibrationData = {
+    calibrated: true,
+    centerX: 0.5,
+    centerY: 0.5,
+    minSpan: 0.14,
+    maxSpan: 0.48,
+    minY: 0.15,
+    maxY: 0.85,
+    handScale: 0.14,
+    timestamp: 0,
+  };
+  private readonly tempFrame: HandTrackingFrame = {
+    timestamp: 0,
+    hands: [],
+    source: 'webxr',
+  };
+  private readonly tempSampleResult: {
+    frame: HandTrackingFrame;
+    calibration: CalibrationData;
+  };
   private hasPrevVRBatPos = false;
   private vrBatLastTime = 0;
+
+  constructor() {
+    this.tempSampleResult = {
+      frame: this.tempFrame,
+      calibration: this.tempCalibration,
+    };
+  }
+
+  private static createPooledHand(handedness: 'left' | 'right'): SmoothedHand {
+    return {
+      handedness,
+      confidence: 1,
+      palmCenter: { x: 0, y: 0, z: 0 },
+      wrist: { x: 0, y: 0, z: 0 },
+      thumbTip: { x: 0, y: 0, z: 0 },
+      indexTip: { x: 0, y: 0, z: 0 },
+      middleTip: { x: 0, y: 0, z: 0 },
+      ringTip: { x: 0, y: 0, z: 0 },
+      pinkyTip: { x: 0, y: 0, z: 0 },
+      pinchDistance: 0.1,
+      handSpan: 0.14,
+      fingerCurl: 0,
+      velocity: { x: 0, y: 0, z: 0 },
+      speed: 0,
+      inInteractionZone: false,
+      landmarks: [],
+    };
+  }
 
   public async probeSupport(): Promise<void> {
     if (typeof navigator === 'undefined' || !('xr' in navigator) || !navigator.xr) {
@@ -122,8 +182,10 @@ export class XRManager {
       : 0.03;
     this.prevTimestamp = now;
 
-    const hands: SmoothedHand[] = [];
-    const seen = new Set<'left' | 'right'>();
+    const hands = this.tempHands;
+    hands.length = 0;
+    const seen = this.tempSeen;
+    seen.clear();
     const xrHands = input.hands ?? [];
 
     for (let i = 0; i < xrHands.length; i++) {
@@ -192,19 +254,18 @@ export class XRManager {
       if (seen.has(handId)) continue;
       seen.add(handId);
 
+      const pooled = this.handPool[handId];
       const prev = this.prevPalmPos.get(handId);
-      const velocity: Vec3 = prev
-        ? {
-            x: (this._localPos.x - prev.x) / dtSec,
-            y: (this._localPos.y - prev.y) / dtSec,
-            z: (this._localPos.z - prev.z) / dtSec,
-          }
-        : { x: 0, y: 0, z: 0 };
-
-      if (!prev) {
-        this.prevPalmPos.set(handId, this._localPos.clone());
-      } else {
+      if (prev) {
+        pooled.velocity.x = (this._localPos.x - prev.x) / dtSec;
+        pooled.velocity.y = (this._localPos.y - prev.y) / dtSec;
+        pooled.velocity.z = (this._localPos.z - prev.z) / dtSec;
         prev.copy(this._localPos);
+      } else {
+        pooled.velocity.x = 0;
+        pooled.velocity.y = 0;
+        pooled.velocity.z = 0;
+        this.prevPalmPos.set(handId, this._localPos.clone());
       }
 
       const pinchDist = this._thumbTip.distanceTo(this._indexTip);
@@ -234,44 +295,35 @@ export class XRManager {
         1
       );
 
-      hands.push({
-        handedness: handId,
-        confidence: 1,
-        palmCenter: { x: normX, y: normY, z: this._localPos.z },
-        wrist: { x: normX, y: normY, z: this._localPos.z },
-        thumbTip: {
-          x: this._thumbTip.x - clayBaseWorld.x,
-          y: this._thumbTip.y - clayBaseWorld.y,
-          z: this._thumbTip.z - clayBaseWorld.z,
-        },
-        indexTip: {
-          x: this._indexTip.x - clayBaseWorld.x,
-          y: this._indexTip.y - clayBaseWorld.y,
-          z: this._indexTip.z - clayBaseWorld.z,
-        },
-        middleTip: {
-          x: this._middleTip.x - clayBaseWorld.x,
-          y: this._middleTip.y - clayBaseWorld.y,
-          z: this._middleTip.z - clayBaseWorld.z,
-        },
-        ringTip: {
-          x: this._ringTip.x - clayBaseWorld.x,
-          y: this._ringTip.y - clayBaseWorld.y,
-          z: this._ringTip.z - clayBaseWorld.z,
-        },
-        pinkyTip: {
-          x: this._pinkyTip.x - clayBaseWorld.x,
-          y: this._pinkyTip.y - clayBaseWorld.y,
-          z: this._pinkyTip.z - clayBaseWorld.z,
-        },
-        pinchDistance: pinchDist,
-        handSpan,
-        fingerCurl,
-        velocity,
-        speed: Math.hypot(velocity.x, velocity.y),
-        inInteractionZone: inZone,
-        landmarks: [],
-      });
+      pooled.confidence = 1;
+      pooled.palmCenter.x = normX;
+      pooled.palmCenter.y = normY;
+      pooled.palmCenter.z = this._localPos.z;
+      pooled.wrist.x = normX;
+      pooled.wrist.y = normY;
+      pooled.wrist.z = this._localPos.z;
+      pooled.thumbTip.x = this._thumbTip.x - clayBaseWorld.x;
+      pooled.thumbTip.y = this._thumbTip.y - clayBaseWorld.y;
+      pooled.thumbTip.z = this._thumbTip.z - clayBaseWorld.z;
+      pooled.indexTip.x = this._indexTip.x - clayBaseWorld.x;
+      pooled.indexTip.y = this._indexTip.y - clayBaseWorld.y;
+      pooled.indexTip.z = this._indexTip.z - clayBaseWorld.z;
+      pooled.middleTip.x = this._middleTip.x - clayBaseWorld.x;
+      pooled.middleTip.y = this._middleTip.y - clayBaseWorld.y;
+      pooled.middleTip.z = this._middleTip.z - clayBaseWorld.z;
+      pooled.ringTip.x = this._ringTip.x - clayBaseWorld.x;
+      pooled.ringTip.y = this._ringTip.y - clayBaseWorld.y;
+      pooled.ringTip.z = this._ringTip.z - clayBaseWorld.z;
+      pooled.pinkyTip.x = this._pinkyTip.x - clayBaseWorld.x;
+      pooled.pinkyTip.y = this._pinkyTip.y - clayBaseWorld.y;
+      pooled.pinkyTip.z = this._pinkyTip.z - clayBaseWorld.z;
+      pooled.pinchDistance = pinchDist;
+      pooled.handSpan = handSpan;
+      pooled.fingerCurl = fingerCurl;
+      pooled.speed = Math.hypot(pooled.velocity.x, pooled.velocity.y);
+      pooled.inInteractionZone = inZone;
+
+      hands.push(pooled);
     }
 
     this.handTrackingActive = hands.length > 0;
@@ -303,37 +355,34 @@ export class XRManager {
         seen.add(handId);
 
         const prev = this.prevPalmPos.get(handId);
-        const velocity: Vec3 = prev
-          ? {
-              x: (this._localPos.x - prev.x) / dtSec,
-              y: (this._localPos.y - prev.y) / dtSec,
-              z: (this._localPos.z - prev.z) / dtSec,
-            }
-          : { x: 0, y: 0, z: 0 };
-
-        if (!prev) {
-          this.prevPalmPos.set(handId, this._localPos.clone());
-        } else {
+        if (prev) {
+          this._ctrlVelVec.x = (this._localPos.x - prev.x) / dtSec;
+          this._ctrlVelVec.y = (this._localPos.y - prev.y) / dtSec;
+          this._ctrlVelVec.z = (this._localPos.z - prev.z) / dtSec;
           prev.copy(this._localPos);
+        } else {
+          this._ctrlVelVec.x = 0;
+          this._ctrlVelVec.y = 0;
+          this._ctrlVelVec.z = 0;
+          this.prevPalmPos.set(handId, this._localPos.clone());
         }
+
+        this._ctrlLocalVec.x = this._localPos.x;
+        this._ctrlLocalVec.y = this._localPos.y;
+        this._ctrlLocalVec.z = this._localPos.z;
+        this._ctrlWorldTipVec.x = this._indexTip.x - clayBaseWorld.x;
+        this._ctrlWorldTipVec.y = this._indexTip.y - clayBaseWorld.y;
+        this._ctrlWorldTipVec.z = this._indexTip.z - clayBaseWorld.z;
 
         hands.push(
           mapControllerToWheelHand({
             handedness: handId,
-            localPos: {
-              x: this._localPos.x,
-              y: this._localPos.y,
-              z: this._localPos.z,
-            },
-            worldRelativeTip: {
-              x: this._indexTip.x - clayBaseWorld.x,
-              y: this._indexTip.y - clayBaseWorld.y,
-              z: this._indexTip.z - clayBaseWorld.z,
-            },
+            localPos: this._ctrlLocalVec,
+            worldRelativeTip: this._ctrlWorldTipVec,
             selected: Boolean(ctrl.userData?.selected),
             squeezed: Boolean(ctrl.userData?.squeezed),
             clayHeight,
-            velocity,
+            velocity: { ...this._ctrlVelVec },
           })
         );
       }
@@ -342,22 +391,10 @@ export class XRManager {
       this.controllerTrackingActive = false;
     }
 
-    const calibration: CalibrationData = {
-      calibrated: true,
-      centerX: 0.5,
-      centerY: 0.5,
-      minSpan: 0.14,
-      maxSpan: 0.48,
-      minY: 0.15,
-      maxY: 0.85,
-      handScale: 0.14,
-      timestamp: now,
-    };
-
-    return {
-      frame: { timestamp: now, hands, source: 'webxr' },
-      calibration,
-    };
+    this.tempFrame.timestamp = now;
+    this.tempFrame.hands = hands;
+    this.tempCalibration.timestamp = now;
+    return this.tempSampleResult;
   }
 
   /**
@@ -524,15 +561,15 @@ export class XRManager {
     vrPanel: THREE.Object3D | null,
     nameStationGroup?: THREE.Object3D | null
   ): void {
-    const headPos = new THREE.Vector3();
-    const forward = new THREE.Vector3();
+    const headPos = this._alignHeadPos;
+    const forward = this._alignForward;
     camera.getWorldPosition(headPos);
     camera.getWorldDirection(forward);
     forward.y = 0;
     if (forward.lengthSq() < 1e-4) forward.set(0, 0, -1);
     else forward.normalize();
 
-    const right = new THREE.Vector3(-forward.z, 0, forward.x);
+    const right = this._alignRight.set(-forward.z, 0, forward.x);
     const yaw = Math.atan2(forward.x, forward.z) + Math.PI;
     const yOffset =
       headPos.y > 0.35
@@ -591,8 +628,19 @@ export class XRManager {
         screen === 'start-studio' ||
         screen === 'settings';
       const isGallery = screen === 'gallery';
-      const panelDist = isMenuScreen ? 0.72 : isGallery ? 0.72 : 0.62;
-      const panelSide = isMenuScreen ? -0.18 : isGallery ? -0.58 : -0.44;
+      const isStudioWork =
+        screen === 'studio' ||
+        screen === 'name-studio' ||
+        screen === 'tutorial' ||
+        screen === 'glaze';
+      const panelDist = isMenuScreen || isGallery ? 0.72 : isStudioWork ? 0.66 : 0.62;
+      const panelSide = isMenuScreen
+        ? -0.18
+        : isGallery
+          ? -0.58
+          : isStudioWork
+            ? -0.56
+            : -0.44;
       const panelY =
         headPos.y > 0.35
           ? THREE.MathUtils.clamp(headPos.y - 0.08, 0.85, 1.55)

@@ -69,6 +69,15 @@ export class VesselPainter {
   private readonly maxUndo = 20;
   private lastUV: UVPoint | null = null;
   private lastBaseTexture: THREE.Texture | null = null;
+  private recompositeDirty = false;
+  private lastRecompositeMs = 0;
+  private paintLoadSeq = 0;
+
+  private cachedHex = '';
+  private rgbaInner = 'rgba(36,75,116,0.94)';
+  private rgbaMid = 'rgba(36,75,116,0.78)';
+  private rgbaOuter = 'rgba(36,75,116,0)';
+  private readonly _lookTarget = new THREE.Vector3();
 
   public activeColorId: string = VILLAGE_PIGMENTS[0].id;
   public activeSize: BrushSizePreset = 'medium';
@@ -230,8 +239,8 @@ export class VesselPainter {
     this.cursorGroup.position
       .copy(worldPoint)
       .addScaledVector(worldNormal, offset);
-    const lookTarget = worldPoint.clone().add(worldNormal);
-    this.cursorGroup.lookAt(lookTarget);
+    this._lookTarget.copy(worldPoint).add(worldNormal);
+    this.cursorGroup.lookAt(this._lookTarget);
   }
 
   public beginStroke(uv: UVPoint): void {
@@ -256,11 +265,18 @@ export class VesselPainter {
       this.dabAtUV(pt);
     }
     this.lastUV = { u: uv.u, v: uv.v };
-    this.recomposite();
+    this.recompositeDirty = true;
+    const now = typeof performance !== 'undefined' ? performance.now() : 0;
+    if (now - this.lastRecompositeMs >= 22) {
+      this.recomposite();
+    }
   }
 
   public endStroke(): void {
     this.lastUV = null;
+    if (this.recompositeDirty) {
+      this.recomposite();
+    }
   }
 
   private pushUndoSnapshot(): void {
@@ -272,6 +288,19 @@ export class VesselPainter {
     }
   }
 
+  private ensureCachedPigment(): void {
+    const hex = this.activeColor.hex;
+    if (this.cachedHex === hex) return;
+    this.cachedHex = hex;
+    const c = new THREE.Color(hex);
+    const r = Math.round(c.r * 255);
+    const g = Math.round(c.g * 255);
+    const b = Math.round(c.b * 255);
+    this.rgbaInner = `rgba(${r},${g},${b},0.94)`;
+    this.rgbaMid = `rgba(${r},${g},${b},0.78)`;
+    this.rgbaOuter = `rgba(${r},${g},${b},0)`;
+  }
+
   private dabAtUV(uv: UVPoint): void {
     if (!this.paintCtx) return;
     const ctx = this.paintCtx;
@@ -279,6 +308,9 @@ export class VesselPainter {
     // Flip V to match Three.js CanvasTexture default flipY = true
     const y = (1 - Math.min(1, Math.max(0, uv.v))) * this.size;
     const radius = BRUSH_SIZE_PX[this.activeSize];
+    if (!this.eraserMode) {
+      this.ensureCachedPigment();
+    }
 
     ctx.save();
     if (this.eraserMode) {
@@ -297,13 +329,9 @@ export class VesselPainter {
         grad.addColorStop(0.7, 'rgba(0,0,0,0.8)');
         grad.addColorStop(1, 'rgba(0,0,0,0)');
       } else {
-        const c = new THREE.Color(this.activeColor.hex);
-        const r = Math.round(c.r * 255);
-        const g = Math.round(c.g * 255);
-        const b = Math.round(c.b * 255);
-        grad.addColorStop(0, `rgba(${r},${g},${b},0.94)`);
-        grad.addColorStop(0.72, `rgba(${r},${g},${b},0.78)`);
-        grad.addColorStop(1, `rgba(${r},${g},${b},0)`);
+        grad.addColorStop(0, this.rgbaInner);
+        grad.addColorStop(0.72, this.rgbaMid);
+        grad.addColorStop(1, this.rgbaOuter);
       }
       ctx.fillStyle = grad;
       ctx.beginPath();
@@ -354,6 +382,9 @@ export class VesselPainter {
 
   public recomposite(): void {
     if (!this.compositeCtx) return;
+    this.recompositeDirty = false;
+    this.lastRecompositeMs =
+      typeof performance !== 'undefined' ? performance.now() : 0;
     const ctx = this.compositeCtx;
     ctx.clearRect(0, 0, this.size, this.size);
 
@@ -390,11 +421,13 @@ export class VesselPainter {
   }
 
   public loadPaintDataUrl(dataUrl?: string): void {
+    const loadId = ++this.paintLoadSeq;
     this.clear(false);
     if (!dataUrl || !this.paintCtx || typeof Image === 'undefined') return;
     const ctx = this.paintCtx;
     const img = new Image();
     img.onload = () => {
+      if (loadId !== this.paintLoadSeq) return;
       ctx.clearRect(0, 0, this.size, this.size);
       ctx.drawImage(img, 0, 0, this.size, this.size);
       this.hasPaint = this.detectAnyPaint();

@@ -254,6 +254,21 @@ export class KilnController {
     this.doorPivot.rotation.y = 0;
   }
 
+  public cancel(): void {
+    this.running = false;
+    this.transformed = false;
+    this.elapsed = 0;
+    this.onTransformCallback = null;
+    this.onCompleteCallback = null;
+    this.vesselMesh = null;
+    this.lastPhase = 'idle';
+    this.glowLight.intensity = 0;
+    this.coilMat.emissiveIntensity = 0;
+    this.hearthFloorMat.emissiveIntensity = 0;
+    (this.sparkPoints.material as THREE.PointsMaterial).opacity = 0;
+    this.doorPivot.rotation.y = 0;
+  }
+
   public update(dt: number): KilnStatus {
     if (!this.running || !this.vesselMesh) {
       return {

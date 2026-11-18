@@ -1621,11 +1621,12 @@ export class PotterySmashSystem {
               sectorsTheta
             )
           : [];
+      const shardShadows = items.length === 1;
       const shards: ActiveShard[] = specs.map((spec, sIdx) => {
         const sMesh = new THREE.Mesh(spec.geometry, shardMat);
         sMesh.visible = false;
-        sMesh.castShadow = true;
-        sMesh.receiveShadow = true;
+        sMesh.castShadow = shardShadows;
+        sMesh.receiveShadow = shardShadows;
         sMesh.position.copy(spec.centroid);
         vesselRoot.add(sMesh);
 

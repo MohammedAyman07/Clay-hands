@@ -8,7 +8,6 @@ import type {
 import {
   ClayNameGeometry,
   createInitialClayNameState,
-  mapGridToPlaqueXY,
   NAME_DEFAULT_COLS,
   NAME_DEFAULT_ROWS,
   NAME_PLAQUE_HEIGHT,
@@ -69,6 +68,7 @@ export class ClayNameSculptor {
   private readonly geometries: THREE.BufferGeometry[] = [];
   private readonly materials: THREE.Material[] = [];
   private readonly _localPt = new THREE.Vector3();
+  private readonly smoothScratch: Float32Array;
 
   constructor(maxAnisotropy = 4) {
     this.group.name = 'ClayNameSculptor';
@@ -78,6 +78,7 @@ export class ClayNameSculptor {
       NAME_DEFAULT_COLS,
       NAME_DEFAULT_ROWS
     );
+    this.smoothScratch = new Float32Array(this.state.cols * this.state.rows);
     this.clayGeometry = new ClayNameGeometry(this.state.cols, this.state.rows);
     this.wetClayTexture = this.createWetTerracottaTexture(maxAnisotropy);
 
@@ -414,21 +415,22 @@ export class ClayNameSculptor {
     const minY = Math.min(prevY, targetY) - radiusM;
     const maxY = Math.max(prevY, targetY) + radiusM;
 
-    const prevDeltas = tool === 'sculpt_smooth' ? new Float32Array(sculptDeltas) : null;
+    const { x: shapeX, y: shapeY } = this.clayGeometry.getCachedShapeXY(
+      this.state.plaqueShape
+    );
+    let prevDeltas: Float32Array | null = null;
+    if (tool === 'sculpt_smooth') {
+      this.smoothScratch.set(sculptDeltas);
+      prevDeltas = this.smoothScratch;
+    }
     let modified = false;
 
     for (let iy = 0; iy < rows; iy++) {
-      const vNorm = (iy / (rows - 1)) * 2 - 1;
+      const rowOffset = iy * cols;
       for (let ix = 0; ix < cols; ix++) {
-        const uNorm = (ix / (cols - 1)) * 2 - 1;
-        const idx = iy * cols + ix;
-        const { x, y } = mapGridToPlaqueXY(
-          uNorm,
-          vNorm,
-          this.state.plaqueShape,
-          NAME_PLAQUE_WIDTH,
-          NAME_PLAQUE_HEIGHT
-        );
+        const idx = rowOffset + ix;
+        const x = shapeX[idx];
+        const y = shapeY[idx];
 
         if (x < minX || x > maxX || y < minY || y > maxY) continue;
 
